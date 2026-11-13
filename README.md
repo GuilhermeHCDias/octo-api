@@ -54,7 +54,7 @@ they run with the placeholder values set in `vitest.config.ts`.
 | ----------------- | ------------------------------------------------------------------------------------------------ |
 | `pnpm dev`        | Runs the Worker locally with `wrangler dev`, on port 8787, with local D1 and R2.                 |
 | `pnpm test`       | Runs the Vitest suite once, inside the Workers runtime.                                          |
-| `pnpm check`      | Checks formatting and lint with Biome. Changes nothing.                                          |
+| `pnpm check`      | Checks formatting and lint with Biome; warnings fail it too. Changes nothing.                    |
 | `pnpm check:fix`  | Same check, rewriting the files with Biome's formatting and safe fixes.                          |
 | `pnpm typecheck`  | Fails when `worker-configuration.d.ts` is out of date, then type-checks `src/` and `test/`.      |
 | `pnpm cf-typegen` | Regenerates `worker-configuration.d.ts` from `wrangler.jsonc`. Run it after changing the config. |
