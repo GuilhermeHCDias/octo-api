@@ -1,0 +1,29 @@
+{
+	"name": "octo-api",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@12.18.0",
+	"engines": {
+		"node": "^26.0.0"
+	},
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy --minify",
+		"test": "vitest run",
+		"check": "biome check --error-on-warnings",
+		"check:fix": "biome check --write",
+		"typecheck": "pnpm cf-typegen --check && tsc && tsc --project test/tsconfig.json",
+		"cf-typegen": "wrangler types --env-interface CloudflareBindings"
+	},
+	"dependencies": {
+		"hono": "^4.13.18"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.7",
+		"@cloudflare/vitest-plugin": "^1.8.1",
+		"typescript": "^7.0.2",
+		"vitest": "^5.1.0",
+		"wrangler": "^4.161.0"
+	}
+}

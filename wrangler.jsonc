@@ -1,0 +1,26 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "octo-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-13",
+	"observability": {
+		"enabled": true
+	},
+	// No database_id or bucket_name: local dev and the tests use the local
+	// simulation, and Wrangler provisions the resources on the first deploy.
+	"d1_databases": [
+		{
+			"binding": "DB"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BUCKET"
+		}
+	],
+	// Secret names only, never values. Local values live in .dev.vars (see
+	// .dev.vars.example); deployed ones are set with `wrangler secret put`.
+	"secrets": {
+		"required": ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
+	}
+}
