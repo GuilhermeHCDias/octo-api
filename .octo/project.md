@@ -1,7 +1,8 @@
 # Project
 
 The Octo API: a Hono app on Cloudflare Workers (D1, R2), written in TypeScript, managed with
-pnpm.
+pnpm. `package.json` pins pnpm 12; the machine needs pnpm 11 or 12 installed (pnpm 10 cannot
+switch to the pinned version) and Node 26.
 
 ## Test
 `pnpm test`

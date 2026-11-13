@@ -1,0 +1,5 @@
+# Dependencies whose build scripts were reviewed and may run on install.
+# Both come with Wrangler and set up their platform binary.
+allowBuilds:
+  esbuild: true
+  workerd: true

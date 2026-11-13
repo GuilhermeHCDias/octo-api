@@ -1,5 +1,5 @@
 # Scaffold the Octo API project
-status: todo
+status: done
 created: 2026-11-13
 type: feat
 depends-on: none
@@ -49,32 +49,32 @@ only add features, never tooling.
 - The test and run commands live in `.octo/project.md`.
 
 ## Acceptance criteria
-- [ ] C1. When `pnpm install` and then `pnpm dev` run on a fresh clone with no `.dev.vars`
+- [x] C1. When `pnpm install` and then `pnpm dev` run on a fresh clone with no `.dev.vars`
   file, the system shall start the Worker locally without any prompt and answer
   `GET /health` with status 200 and the JSON body `{"status":"ok"}`.
-- [ ] C2. When a request matches no route, the system shall answer 404 with the JSON body
+- [x] C2. When a request matches no route, the system shall answer 404 with the JSON body
   `{"error":"Not Found"}`; when a handler throws, it shall answer 500 with the JSON body
   `{"error":"Internal Server Error"}`, never exposing the error's message or stack.
-- [ ] C3. The Wrangler config shall declare a D1 binding `DB` and an R2 binding `BUCKET`, and a
+- [x] C3. The Wrangler config shall declare a D1 binding `DB` and an R2 binding `BUCKET`, and a
   test running inside the Workers runtime shall prove both work: a `SELECT 1` through `DB`
   returns its row, and an object written through `BUCKET` reads back with the same content.
-- [ ] C4. The Wrangler config shall declare `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
+- [x] C4. The Wrangler config shall declare `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
   as required secrets, both shall appear in the generated `CloudflareBindings` type, a committed
   `.dev.vars.example` shall list them with placeholder values, `.dev.vars` shall be ignored by
   git, and the `stripe` package shall not be a dependency.
-- [ ] C5. `pnpm check` shall exit 0 on the scaffold and non-zero when a file breaks Biome's
+- [x] C5. `pnpm check` shall exit 0 on the scaffold and non-zero when a file breaks Biome's
   formatting or a recommended lint rule, and `pnpm check:fix` shall rewrite the files with the
   safe fixes applied.
-- [ ] C6. `pnpm typecheck` shall exit 0 on the scaffold under TypeScript `strict`, and non-zero
+- [x] C6. `pnpm typecheck` shall exit 0 on the scaffold under TypeScript `strict`, and non-zero
   when the committed bindings types are out of date with the Wrangler config.
-- [ ] C7. `pnpm test` shall run the Vitest suite once (no watch mode) inside the Workers
+- [x] C7. `pnpm test` shall run the Vitest suite once (no watch mode) inside the Workers
   runtime and exit 0 on a fresh clone with no `.dev.vars` file, covering C1's `/health`
   response, C2's two error responses and C3's bindings.
-- [ ] C8. When a pull request is opened or updated, or a commit lands on `main`, a GitHub
+- [x] C8. When a pull request is opened or updated, or a commit lands on `main`, a GitHub
   Actions workflow shall install with the frozen lockfile and run `pnpm check`,
   `pnpm typecheck` and `pnpm test`, failing when any of them fails and needing no repository
   secret.
-- [ ] C9. A `README.md` shall name the stack, the prerequisites (Node and pnpm versions), how
+- [x] C9. A `README.md` shall name the stack, the prerequisites (Node and pnpm versions), how
   to set up `.dev.vars` from the example, and what each package script does.
 
 ## Out of scope
@@ -133,3 +133,24 @@ only add features, never tooling.
   `pnpm typecheck` and `pnpm test` all exit 0, and with `pnpm dev` running,
   `curl -i http://localhost:8787/health` returns 200 with `{"status":"ok"}` while
   `curl -i http://localhost:8787/nope` returns 404 with `{"error":"Not Found"}`.
+
+## Implementation
+- - C1: proven by test/health.test.ts "GET /health > answers 200 with the JSON body { status: 'ok' }", through the Worker's default export, seen red first (404 before the route existed). `wrangler deploy --dry-run` bundles the Worker with both bindings and no prompt. `pnpm dev` itself was not launched here: it is the user's Try It, listed in the manual checks.
+- - C2: proven by test/errors.test.ts, "a request that matches no route" (404) and "a handler that throws" (500, no message or stack in the body, error logged), seen red first: the 404 and 500 against Hono's text/plain defaults, the leak and log tests against a handler that answered with the stack.
+- - C3: proven by test/bindings.test.ts, "the D1 binding DB > returns the row of a SELECT 1" and "the R2 binding BUCKET > reads back an object with the content it was written with", seen red first (`env.DB` and `env.BUCKET` undefined before `wrangler.jsonc` declared them).
+- - C4: proven by test/bindings.types.ts, compiled by `pnpm typecheck` and seen red first (TS2339: both names missing from `CloudflareBindings` before `secrets.required` declared them), and by test/secrets.test.ts, seen red first (undefined before the test config supplied values). `git check-ignore .dev.vars` exits 0 (1 before the ignore rule) and 1 for `.dev.vars.example`; `stripe` is absent from package.json and the lockfile.
+- - C5: proven by command, not by an automated test (it would test Biome itself). `pnpm check` exited 1 before the script existed and 0 on the scaffold; 1 on a probe file with broken formatting, which `pnpm check:fix` rewrote (then 0); 1 on a probe breaking `noDoubleEquals` and `noDebugger`. The probes were deleted.
+- - C6: proven by command. `pnpm typecheck` exited 1 before the script existed and 0 on the scaffold; 1 with "Types at worker-configuration.d.ts are out of date" after renaming a binding in `wrangler.jsonc` without regenerating; 1 with TS7006 on a probe with an implicit `any`. The config was restored and the probe deleted.
+- - C7: `pnpm test` is `vitest run` with `@cloudflare/vitest-plugin` reading `wrangler.jsonc`; 4 files, 8 tests passed after a clean `pnpm install --frozen-lockfile` with no `.dev.vars`, under Node 26.13.1 and Node 22.19.0. Wrangler prints "Missing required secrets" once per test file on such a clone: a warning only, as the spec expects.
+- - C8: .github/workflows/ci.yml runs on `pull_request` and on pushes to `main`, with `contents: read` and no secret: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck`, `pnpm test`. The file parses as YAML and the same four commands passed locally under Node 26.13.1, but the workflow has not run on GitHub yet: its first run is this run's pull request.
+- - C9: README.md names the stack, the prerequisites (Node 26, pnpm 12), the `.dev.vars` setup from `.dev.vars.example`, and each of the seven package scripts; it passes `pnpm check`.
+- - Verification: 2026-11-13, run with pnpm 12.18.0 after deleting `node_modules`, with no `.dev.vars` and stdin closed: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm typecheck` and `pnpm test` (8 passed, 0 failed) all exited 0, under Node 26.13.1 and again under Node 22.19.0. The two `curl` checks against `pnpm dev` were not run (Try It is the user's). The verify tool failed before any test ran, for the machine's setup: its pnpm 10.32.1 cannot switch to the pinned pnpm 12.18.0 ("Failed to switch pnpm ... ENOEXEC"); pnpm 11.28.9 and 12.10.0 made the switch.
+- - Decision: `packageManager` pins pnpm 12.18.0, the latest stable, although the machine that built this runs pnpm 10.32.1, which cannot switch to it. Why: the spec asks for the latest stable and for `allowBuilds`, which pnpm 10 does not have. Cost if wrong: pin a pnpm 10 instead, move the approvals to `onlyBuiltDependencies` and regenerate the lockfile.
+- - Decision: `engines.node` is `^26.0.0` and the CI installs `node@26`. Why: Node 26 is the active LTS since October 2026, and a caret keeps both on that major. Cost if wrong: pnpm only warns on another Node (the suite also passed on 22.19.0, and Wrangler accepts 22.12 or later), so relaxing it is a one-line change in package.json and one in the workflow.
+- - Decision: wrangler 4.161.0 and @cloudflare/vitest-plugin 1.8.1, one release behind the registry's latest (4.162.0 and 1.8.2, both published hours before this run). Why: pnpm's default release-age policy holds back versions younger than a day, and the scaffold keeps that policy on. Cost if wrong: `pnpm update` a day later.
+- - Decision: Biome skips `specs/` and `.octo/`, besides the generated `worker-configuration.d.ts`. Why: Biome 2.6 formats Markdown and would rewrite the spec and the project file, which Octo owns and edits. Cost if wrong: drop the two entries from `files.includes` in biome.json and run `pnpm check:fix`.
+- - Decision: the error handler logs the error with `console.error` and answers 500 for every thrown error, Hono's `HTTPException` included. Why: C2 asks for 500 whenever a handler throws, and without the log a failure would leave no trace. Cost if wrong: the first spec that throws `HTTPException` (auth, validation) adds a branch returning `error.getResponse()`, with its test.
+- - Decision: the tests get the two secrets as placeholder values from `miniflare.bindings` in vitest.config.ts, which override a local `.dev.vars` (checked with one in place). Why: a fresh clone and the CI have none, and a developer's real Stripe keys must never reach a test. Cost if wrong: remove the block and the tests read `.dev.vars` again.
+- - Decision: test/errors.test.ts registers its throwing route on the app imported from src/index.ts, before any request. Why: it exercises the real app's error handler with no test-only route or factory in production code; Vitest gives each test file its own module graph, and the suite passed with files shuffled and run in sequence. Cost if wrong: move the app's construction to a factory the test calls.
+- - Decision: the CI sets up pnpm and Node with `pnpm/setup` v3.2.0, pinned by commit, with `install: false` and an explicit `pnpm install --frozen-lockfile` step. Why: it is the action pnpm's CI guide now recommends, it reads the pnpm version from `packageManager`, and the explicit step makes the frozen lockfile visible. Cost if wrong: swap it for `pnpm/action-setup` plus `actions/setup-node`.
+- - Machine setup: 2026-11-13, at the user's request, Homebrew's pnpm went from 10.32.1 to 12.18.0, the pinned version, with no change to the code. With it, `pnpm install --frozen-lockfile`, `pnpm check` and `pnpm typecheck` exited 0 and the verify tool passed (8 passed, 0 failed), under the machine's Node 22.19.0.

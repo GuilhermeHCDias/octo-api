@@ -1,0 +1,7 @@
+# Local secrets for `pnpm dev`. Copy this file to .dev.vars and fill in the values:
+#
+#   cp .dev.vars.example .dev.vars
+#
+# .dev.vars is ignored by git. The names match `secrets.required` in wrangler.jsonc.
+STRIPE_SECRET_KEY="sk_test_replace_me"
+STRIPE_WEBHOOK_SECRET="whsec_replace_me"
