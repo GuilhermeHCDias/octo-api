@@ -1,5 +1,5 @@
 # Wire Stripe into the Octo API
-status: todo
+status: done
 created: 2026-11-14
 type: feat
 depends-on: none
@@ -64,26 +64,26 @@ a cancellation changes it, with no manual step.
 - The test and run commands live in `.octo/project.md`.
 
 ## Acceptance criteria
-- [ ] C1. The repository shall hold D1 migrations that create the tables `accounts` and
+- [x] C1. The repository shall hold D1 migrations that create the tables `accounts` and
   `subscriptions` with the fields listed under *Decisions & assumptions*, and on a fresh clone
   `pnpm test` and `pnpm dev` shall run against a local D1 that has both tables, with no manual
   step.
-- [ ] C2. When a request to `PUT /account`, `GET /account` or `POST /checkout` carries no
+- [x] C2. When a request to `PUT /account`, `GET /account` or `POST /checkout` carries no
   `Authorization: Bearer` token, or one that GitHub's "check a token" does not recognize as
   issued to Octo's OAuth App, the system shall answer 401 with `{"error":"Unauthorized"}` and
   read or write nothing else; the token shall never be written to D1 or to a log.
-- [ ] C3. When `PUT /account` is called with a valid token, the system shall create the
+- [x] C3. When `PUT /account` is called with a valid token, the system shall create the
   account with the GitHub user id, login and primary verified e-mail (null when GitHub returns
   none), or refresh the login and e-mail of the account that exists, without calling Stripe
   and without changing the account's Stripe data or subscription, and answer 200 with the body
   of `GET /account`.
-- [ ] C4. When `GET /account` is called with a valid token, the system shall answer 200 with
+- [x] C4. When `GET /account` is called with a valid token, the system shall answer 200 with
   `github_user_id`, `github_login`, `access` and `subscription` (null, or an object with
   `status`, `plan`, `current_period_end` in ISO 8601 UTC and `cancel_at_period_end`), read
   from D1 alone and changing nothing; `access` shall be true only when the subscription's
   status is `active`, `trialing` or `past_due`; when the user has no account it shall answer
   404 with `{"error":"Account not found"}`.
-- [ ] C5. When `POST /checkout` is called with a valid token and the body
+- [x] C5. When `POST /checkout` is called with a valid token and the body
   `{"plan":"pro_monthly"}` or `{"plan":"pro_year"}`, the system shall create a Stripe Checkout
   Session in subscription mode for the price with that lookup key, stamped with the GitHub
   user id on the session and on the subscription it creates, with the success and cancel URLs
@@ -91,26 +91,26 @@ a cancellation changes it, with no manual step.
   `{"url":"<the Checkout URL>"}`. For an account with no Stripe customer the session names no
   customer and the URL carries `prefilled_email` with the account's GitHub e-mail when it has
   one; otherwise the session names the stored customer.
-- [ ] C6. `POST /checkout` shall create no session and answer 400 with
+- [x] C6. `POST /checkout` shall create no session and answer 400 with
   `{"error":"Invalid plan"}` when the plan is missing or is neither of the two, 404 with
   `{"error":"Account not found"}` when the user has no account, and 409 with
   `{"error":"Already subscribed"}` when the account's subscription is live (status `active`,
   `trialing`, `past_due`, `unpaid` or `paused`).
-- [ ] C7. When `POST /webhooks/stripe` receives a request whose `Stripe-Signature` header is
+- [x] C7. When `POST /webhooks/stripe` receives a request whose `Stripe-Signature` header is
   missing, does not match the raw body under `STRIPE_WEBHOOK_SECRET`, or is older than
   Stripe's five-minute tolerance, the system shall answer 400 and write nothing.
-- [ ] C8. When a signed event of one of the six subscribed types arrives, the system shall
+- [x] C8. When a signed event of one of the six subscribed types arrives, the system shall
   fetch the event's customer and that customer's subscriptions from Stripe, find the account
   by the stored customer id or else by the GitHub user id stamped on the subscription, store
   the customer id and the customer's e-mail on the account, overwrite the account's
   `subscriptions` row with the current subscription's id, status, plan, period end and
   scheduled cancellation, and answer 200; the same event delivered twice, or an older event
   delivered after a newer one, shall leave the rows equal to Stripe's current state.
-- [ ] C9. When a signed event of any other type arrives, or one whose customer matches no
+- [x] C9. When a signed event of any other type arrives, or one whose customer matches no
   account, the system shall answer 200 and change nothing, logging the unmatched customer id;
   when Stripe fails during a sync, the system shall answer 500 and change nothing, so that
   Stripe delivers the event again.
-- [ ] C10. The README shall list every secret and setting the Worker needs and how to set
+- [x] C10. The README shall list every secret and setting the Worker needs and how to set
   them for local development, without pointing to a file the repository does not have, and
   shall describe the setup done outside the repository: the Stripe webhook destination with
   its six events, the two prices and their lookup keys, the payment methods enabled in the
@@ -237,3 +237,21 @@ a cancellation changes it, with no manual step.
   cancelling the subscription in the Stripe Dashboard makes `GET /account` answer
   `"access":false`. On the Checkout page, note whether the e-mail field arrived filled in
   with the GitHub e-mail and editable.
+
+## Implementation
+- - C1: proven by test/schema.test.ts ("the local D1 the tests run against", 4 tests), seen red first (`no such table: accounts`). The migration is `migrations/0001_create_accounts_and_subscriptions.sql`; `vitest.config.ts` reads it and `test/support/apply-migrations.ts` applies it before each test file; `pnpm dev` now runs `pnpm migrate:local` first, which was run by hand and left `accounts` and `subscriptions` in the local dev D1.
+- - C2: proven by test/auth.test.ts (the five tests under each of `PUT /account`, `GET /account` and `POST /checkout`, plus "a valid token is never written to D1"), seen red first (404 instead of 401). The check lives in `requireGitHubUser` (src/github.ts).
+- - C3: proven by test/account.test.ts ("PUT /account, for a user with no account" and "PUT /account, for a user whose account exists"), seen red first (404 from the missing route).
+- - C4: proven by test/account.test.ts ("GET /account", including one test per subscription status for `access`), seen red first.
+- - C5: proven by test/checkout.test.ts ("for an account with no Stripe customer", "... and no GitHub e-mail", "for an account with a Stripe customer"), seen red first. The tests read the parameters the real Stripe SDK sent to a fake of Stripe's API.
+- - C6: proven by test/checkout.test.ts ("with an invalid plan", "for a user with no account", and the 409 test per live status), seen red first.
+- - C7: proven by test/webhooks.test.ts ("with a signature that does not hold": missing, other secret, other body, 301 seconds old, not a signature; and a 240-second-old one accepted), seen red first. The tests sign their payloads themselves with Web Crypto, not with the SDK.
+- - C8: proven by test/webhooks.test.ts ("for a customer stored on an account" and "for the customer of a first payment", each run over the six types, with the stale-snapshot, delivered-twice and out-of-order tests), seen red first; removing `status: "all"` from the sync was seen to fail three of them. The sync is `syncCustomer` (src/sync.ts).
+- - C9: proven by test/webhooks.test.ts ("a signed event that is not for the API" and "... when Stripe fails"), seen red first. The unmatched customer id is logged with `console.warn`.
+- - C10: proven by test/readme.test.ts, seen red first; it reads the required names from `wrangler.jsonc`, so a setting added there without a README entry fails it. 2026-11-14: `pnpm test` 124 passed, 0 failed; `pnpm check` and `pnpm typecheck` clean; `wrangler deploy --dry-run` bundles the Worker with the Stripe SDK.
+- - Verification: the end-to-end check was not run. It needs `pnpm dev` (the user's, through Try It), real sandbox values, the Stripe CLI and a token issued by Octo's OAuth App; it is handed to the user as the manual checks.
+- - Decision: `pnpm dev` is `pnpm migrate:local && wrangler dev`, and `migrate:local` sets `CI=true` so Wrangler skips its confirmation prompt. Why: C1 asks for no manual step, and Wrangler has no flag for it. Cost if wrong: the inline variable needs a POSIX shell; on Windows the script would need `cross-env`.
+- - Decision: only GitHub's 404 to "check a token" (or a missing or non-Bearer header, answered without calling GitHub) is a 401; any other non-200 there is the scaffold's 500. Listing the e-mails, a 403 or 404 (a token without `user:email`) gives a null e-mail, and any other failure is a 500 that creates nothing. Why: C2 names the unrecognized token only, and a GitHub outage must neither look like a logout nor erase a stored e-mail. Cost if wrong: one status check in src/github.ts.
+- - Decision: the GitHub user id is stamped on the session as `client_reference_id` and on the subscription as `metadata.github_user_id`, which is what the webhook reads. Dates are stored as ISO 8601 UTC text, `cancel_at_period_end` as 0 or 1 mirroring Stripe's flag of that name (a cancellation scheduled for a custom date through `cancel_at` is not reflected), and `plan` may be null, for a subscription whose price has no lookup key. Why: the spec names the fields, not their encoding, and a null plan keeps a sync from failing forever on a subscription created by hand. Cost if wrong: a new migration.
+- - Decision: C8 is read literally when an event's customer is not stored anywhere but its subscription is stamped with an account that already stores another customer: the account takes the new customer and its subscription. Why: the spec gives no rule for a second customer of one account, which only two Checkouts opened before either was paid can produce. Cost if wrong: an event of the abandoned customer can overwrite the row of the live one until the next event of the live one; the fix is a guard in `syncCustomer`.
+- - Decision: a rejected signature answers 400 `{"error":"Invalid signature"}`, a subscribed event with no customer answers 200 and changes nothing, and every accepted event answers `{"received":true}`. Tests fake only the network: `test/support/` replaces the global `fetch` with fakes of GitHub's and Stripe's APIs, under the real Hono app, the real Stripe SDK and local D1. `pnpm check:fix` also re-indented two lines of `wrangler.jsonc` that were failing `pnpm check` on `main`.

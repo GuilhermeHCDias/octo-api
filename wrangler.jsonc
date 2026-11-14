@@ -10,8 +10,8 @@
 	// simulation, and Wrangler provisions the resources on the first deploy.
 	"d1_databases": [
 		{
-  		"binding": "DB",
-      "database_id": "9926c870-9df0-460d-ae27-bbfb293227c4"
+			"binding": "DB",
+			"database_id": "9926c870-9df0-460d-ae27-bbfb293227c4"
 		}
 	],
 	"r2_buckets": [
@@ -20,9 +20,16 @@
 			"bucket_name": "octo-releases"
 		}
 	],
-	// Secret names only, never values. Local values live in .dev.vars (see
-	// .dev.vars.example); deployed ones are set with `wrangler secret put`.
+	// Names only, never values. Local values live in .dev.vars (the README
+	// lists them); deployed ones are set with `wrangler secret put`.
 	"secrets": {
-		"required": ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
+		"required": [
+			"STRIPE_SECRET_KEY",
+			"STRIPE_WEBHOOK_SECRET",
+			"GITHUB_CLIENT_ID",
+			"GITHUB_CLIENT_SECRET",
+			"CHECKOUT_SUCCESS_URL",
+			"CHECKOUT_CANCEL_URL"
+		]
 	}
 }

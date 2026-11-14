@@ -1,5 +1,8 @@
 import { Hono } from "hono";
+import account from "./routes/account";
+import checkout from "./routes/checkout";
 import health from "./routes/health";
+import webhooks from "./routes/webhooks";
 
 const app = new Hono<{ Bindings: CloudflareBindings }>();
 
@@ -17,6 +20,9 @@ app.use(async (_c, next) => {
 });
 
 app.route("/health", health);
+app.route("/account", account);
+app.route("/checkout", checkout);
+app.route("/webhooks", webhooks);
 
 app.notFound((c) => c.json({ error: "Not Found" }, 404));
 
