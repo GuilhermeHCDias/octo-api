@@ -10,12 +10,14 @@
 	// simulation, and Wrangler provisions the resources on the first deploy.
 	"d1_databases": [
 		{
-			"binding": "DB"
+  		"binding": "DB",
+      "database_id": "9926c870-9df0-460d-ae27-bbfb293227c4"
 		}
 	],
 	"r2_buckets": [
 		{
-			"binding": "BUCKET"
+			"binding": "BUCKET",
+			"bucket_name": "octo-releases"
 		}
 	],
 	// Secret names only, never values. Local values live in .dev.vars (see
