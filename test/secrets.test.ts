@@ -7,3 +7,12 @@ describe("the Stripe secrets", () => {
 		expect(env.STRIPE_WEBHOOK_SECRET).toBe("whsec_placeholder");
 	});
 });
+
+describe("the GitHub OAuth App's credentials and the Checkout URLs", () => {
+	it("reach the Worker with the test values, with no .dev.vars file", () => {
+		expect(env.GITHUB_CLIENT_ID).toBe("github_client_id_placeholder");
+		expect(env.GITHUB_CLIENT_SECRET).toBe("github_client_secret_placeholder");
+		expect(env.CHECKOUT_SUCCESS_URL).toBe("https://octo.test/checkout/success");
+		expect(env.CHECKOUT_CANCEL_URL).toBe("https://octo.test/checkout/cancel");
+	});
+});

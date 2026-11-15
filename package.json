@@ -8,7 +8,8 @@
 		"node": "^26.0.0"
 	},
 	"scripts": {
-		"dev": "wrangler dev",
+		"dev": "pnpm migrate:local && wrangler dev",
+		"migrate:local": "CI=true wrangler d1 migrations apply DB --local",
 		"deploy": "wrangler deploy --minify",
 		"test": "vitest run",
 		"check": "biome check --error-on-warnings",
@@ -17,7 +18,8 @@
 		"cf-typegen": "wrangler types --env-interface CloudflareBindings"
 	},
 	"dependencies": {
-		"hono": "^4.13.18"
+		"hono": "^4.13.18",
+		"stripe": "^23.1.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.6.7",

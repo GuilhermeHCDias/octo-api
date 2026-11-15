@@ -13,3 +13,6 @@ Type-check: `pnpm typecheck`.
 ## Run
 `pnpm install && pnpm dev`
 Open: http://localhost:8787/health
+
+`pnpm dev` applies the D1 migrations in `migrations/` to the local database before it starts
+the Worker. The routes beyond `/health` need the six values the README lists, in `.dev.vars`.
