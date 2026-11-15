@@ -9,7 +9,8 @@ export type RecordedRequest = {
 
 export type FakeService = {
 	host: string;
-	handle(request: RecordedRequest): Response;
+	// A promise when the fake holds its answer back, as a slow service does.
+	handle(request: RecordedRequest): Response | Promise<Response>;
 };
 
 /**

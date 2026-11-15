@@ -51,6 +51,7 @@ beforeEach(async () => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 describe("POST /webhooks/stripe with a signature that does not hold", () => {
@@ -383,6 +384,97 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
 			expect.objectContaining({ github_user_id: 583231, plan: null }),
+		);
+	});
+
+	it("stores as scheduled a cancellation the customer portal set through cancel_at", async () => {
+		// Under flexible billing the portal leaves the flag false and sets the
+		// date instead.
+		stripe.setSubscription({
+			id: "sub_octocat",
+			customer: "cus_octocat",
+			status: "active",
+			cancel_at_period_end: false,
+			cancel_at: 1_797_249_600,
+		});
+
+		const response = await deliver(
+			"customer.subscription.updated",
+			"cus_octocat",
+		);
+
+		expect(response.status).toBe(200);
+		expect(await allSubscriptions()).toContainEqual(
+			expect.objectContaining({
+				github_user_id: 583231,
+				status: "active",
+				cancel_at_period_end: 1,
+			}),
+		);
+	});
+
+	it("ends in Stripe's current state when two deliveries overlap and the older answer arrives last", async () => {
+		// Only the clock is faked, so the two syncs start at distinct times.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		stripe.setSubscription({
+			id: "sub_octocat",
+			customer: "cus_octocat",
+			status: "incomplete",
+		});
+		// The first delivery reads the subscription while it is incomplete.
+		// Before Stripe's answer arrives, the payment goes through and a second
+		// delivery syncs the new state.
+		let second: Response | undefined;
+		stripe.beforeNextAnswer("/v1/subscriptions", async () => {
+			vi.setSystemTime(Date.now() + 1000);
+			stripe.setSubscription({
+				id: "sub_octocat",
+				customer: "cus_octocat",
+				status: "active",
+			});
+			second = await deliver("customer.subscription.updated", "cus_octocat");
+			vi.setSystemTime(Date.now() + 1000);
+		});
+
+		const first = await deliver("customer.subscription.created", "cus_octocat");
+
+		expect(first.status).toBe(200);
+		expect(second?.status).toBe(200);
+		expect(await allSubscriptions()).toContainEqual(
+			expect.objectContaining({ github_user_id: 583231, status: "active" }),
+		);
+	});
+
+	it("forgets a customer deleted in Stripe, so the next Checkout creates a new one", async () => {
+		await insertSubscription({
+			github_user_id: 583231,
+			stripe_subscription_id: "sub_octocat",
+			status: "active",
+		});
+		// Deleting a customer cancels its subscriptions, which sends the event.
+		stripe.deleteCustomer("cus_octocat");
+		stripe.setSubscription({
+			id: "sub_octocat",
+			customer: "cus_octocat",
+			status: "canceled",
+		});
+
+		const response = await deliver(
+			"customer.subscription.deleted",
+			"cus_octocat",
+		);
+
+		expect(response.status).toBe(200);
+		expect(await allAccounts()).toContainEqual(
+			expect.objectContaining({
+				github_user_id: 583231,
+				github_email: "octocat@github.com",
+				stripe_customer_id: null,
+				billing_email: null,
+			}),
+		);
+		expect(await allSubscriptions()).toContainEqual(
+			expect.objectContaining({ github_user_id: 583231, status: "canceled" }),
 		);
 	});
 });

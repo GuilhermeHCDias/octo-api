@@ -9,6 +9,8 @@ export type FakeSubscription = {
 	created: number;
 	current_period_end: number;
 	cancel_at_period_end: boolean;
+	// Seconds since the epoch: the date of a scheduled cancellation, or null.
+	cancel_at: number | null;
 	// The lookup key of the subscription's price.
 	plan: string | null;
 	metadata: Record<string, string>;
@@ -35,6 +37,7 @@ function subscriptionObject(subscription: FakeSubscription) {
 		status: subscription.status,
 		created: subscription.created,
 		cancel_at_period_end: subscription.cancel_at_period_end,
+		cancel_at: subscription.cancel_at,
 		metadata: subscription.metadata,
 		items: list([
 			{
@@ -65,7 +68,11 @@ function stripeError(status: number, type: string, message: string): Response {
  * "current state in Stripe", and read the sessions it was asked to create.
  */
 export function fakeStripe() {
-	const customers = new Map<string, { id: string; email: string | null }>();
+	const customers = new Map<
+		string,
+		{ id: string; email: string | null } | { id: string; deleted: true }
+	>();
+	const interludes = new Map<string, () => Promise<void>>();
 	const subscriptions = new Map<string, FakeSubscription>();
 	const requests: RecordedRequest[] = [];
 	const sessions: URLSearchParams[] = [];
@@ -88,6 +95,56 @@ export function fakeStripe() {
 		return Response.json(list(data));
 	}
 
+	function answer(request: RecordedRequest): Response {
+		requests.push(request);
+		if (outage) {
+			return stripeError(500, "api_error", "Stripe is down");
+		}
+		if (
+			request.headers.get("authorization") !== `Bearer ${env.STRIPE_SECRET_KEY}`
+		) {
+			return stripeError(401, "invalid_request_error", "Invalid API Key");
+		}
+
+		const { pathname, searchParams } = request.url;
+		const route = `${request.method} ${pathname}`;
+
+		if (route === "GET /v1/prices") {
+			const keys = [...searchParams]
+				.filter(([name]) => name.startsWith("lookup_keys"))
+				.map(([, value]) => value);
+			const data = PRICES.filter(({ lookup_key }) =>
+				keys.includes(lookup_key),
+			).map((price) => ({ object: "price", ...price }));
+			return Response.json(list(data));
+		}
+
+		if (route === "POST /v1/checkout/sessions") {
+			const params = new URLSearchParams(request.body);
+			sessions.push(params);
+			return Response.json({
+				id: "cs_test_a1B2c3",
+				object: "checkout.session",
+				mode: params.get("mode"),
+				url: CHECKOUT_URL,
+			});
+		}
+
+		if (route === "GET /v1/subscriptions") {
+			return listSubscriptions(searchParams);
+		}
+
+		const customer = pathname.match(/^\/v1\/customers\/([^/]+)$/);
+		if (request.method === "GET" && customer) {
+			const found = customers.get(customer[1] ?? "");
+			return found
+				? Response.json({ object: "customer", ...found })
+				: stripeError(404, "invalid_request_error", "No such customer");
+		}
+
+		return stripeError(404, "invalid_request_error", `No route ${route}`);
+	}
+
 	return {
 		host: "api.stripe.com",
 		requests,
@@ -107,10 +164,28 @@ export function fakeStripe() {
 				created: 1_794_000_000,
 				current_period_end: 1_797_249_600, // 2026-12-14T12:00:00Z
 				cancel_at_period_end: false,
+				cancel_at: null,
 				plan: "pro_monthly",
 				metadata: {},
 				...subscription,
 			});
+		},
+
+		/**
+		 * Deletes the customer, as the Dashboard does: Stripe still answers a
+		 * retrieve, with `deleted: true` and nothing else about the customer.
+		 */
+		deleteCustomer(id: string): void {
+			customers.set(id, { id, deleted: true });
+		},
+
+		/**
+		 * Makes the answer to the next request for `pathname` a slow one: Stripe
+		 * reads its state when the request arrives, `meanwhile` runs, and only
+		 * then does the answer, stale by now, reach the Worker.
+		 */
+		beforeNextAnswer(pathname: string, meanwhile: () => Promise<void>): void {
+			interludes.set(pathname, meanwhile);
 		},
 
 		/** Makes every later request fail with a 500. */
@@ -118,55 +193,12 @@ export function fakeStripe() {
 			outage = true;
 		},
 
-		handle(request: RecordedRequest): Response {
-			requests.push(request);
-			if (outage) {
-				return stripeError(500, "api_error", "Stripe is down");
-			}
-			if (
-				request.headers.get("authorization") !==
-				`Bearer ${env.STRIPE_SECRET_KEY}`
-			) {
-				return stripeError(401, "invalid_request_error", "Invalid API Key");
-			}
-
-			const { pathname, searchParams } = request.url;
-			const route = `${request.method} ${pathname}`;
-
-			if (route === "GET /v1/prices") {
-				const keys = [...searchParams]
-					.filter(([name]) => name.startsWith("lookup_keys"))
-					.map(([, value]) => value);
-				const data = PRICES.filter(({ lookup_key }) =>
-					keys.includes(lookup_key),
-				).map((price) => ({ object: "price", ...price }));
-				return Response.json(list(data));
-			}
-
-			if (route === "POST /v1/checkout/sessions") {
-				const params = new URLSearchParams(request.body);
-				sessions.push(params);
-				return Response.json({
-					id: "cs_test_a1B2c3",
-					object: "checkout.session",
-					mode: params.get("mode"),
-					url: CHECKOUT_URL,
-				});
-			}
-
-			if (route === "GET /v1/subscriptions") {
-				return listSubscriptions(searchParams);
-			}
-
-			const customer = pathname.match(/^\/v1\/customers\/([^/]+)$/);
-			if (request.method === "GET" && customer) {
-				const found = customers.get(customer[1] ?? "");
-				return found
-					? Response.json({ object: "customer", ...found })
-					: stripeError(404, "invalid_request_error", "No such customer");
-			}
-
-			return stripeError(404, "invalid_request_error", `No route ${route}`);
+		handle(request: RecordedRequest): Response | Promise<Response> {
+			const response = answer(request);
+			const meanwhile = interludes.get(request.url.pathname);
+			if (!meanwhile) return response;
+			interludes.delete(request.url.pathname);
+			return meanwhile().then(() => response);
 		},
 	} satisfies FakeService & Record<string, unknown>;
 }

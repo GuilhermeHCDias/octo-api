@@ -47,6 +47,10 @@ async function findGitHubUserId(
  * out-of-order deliveries all end in the same rows. Every read happens before
  * the one atomic write: a failure changes nothing.
  *
+ * Deliveries also overlap. The subscription row keeps the time its sync began
+ * to fetch, and a sync that began earlier never overwrites it: its answer is
+ * the older one, and whatever changed since has an event of its own.
+ *
  * Returns false when the customer matches no account.
  */
 export async function syncCustomer(
@@ -54,6 +58,7 @@ export async function syncCustomer(
 	stripe: Stripe,
 	customerId: string,
 ): Promise<boolean> {
+	const fetchedAt = new Date().toISOString();
 	const [customer, subscriptions] = await Promise.all([
 		stripe.customers.retrieve(customerId),
 		// `all` includes the canceled ones, which Stripe leaves out by default.
@@ -71,7 +76,6 @@ export async function syncCustomer(
 	);
 	if (githubUserId === null) return false;
 
-	const now = new Date().toISOString();
 	const current = currentSubscription(subscriptions.data);
 	// A subscription's period lives on its items; Octo's has one item.
 	const item = current?.items.data[0];
@@ -79,20 +83,34 @@ export async function syncCustomer(
 	await db.batch([
 		db
 			.prepare(
-				"UPDATE accounts SET stripe_customer_id = ?, billing_email = ?, updated_at = ? WHERE github_user_id = ?",
+				`UPDATE accounts SET stripe_customer_id = ?1, billing_email = ?2, updated_at = ?3
+				WHERE github_user_id = ?4 AND NOT EXISTS (
+					SELECT 1 FROM subscriptions WHERE github_user_id = ?4 AND updated_at > ?5
+				)`,
 			)
 			.bind(
-				customerId,
+				// Stripe refuses a new Checkout for a deleted customer: forgetting
+				// it lets the next Checkout create another.
+				customer.deleted ? null : customerId,
 				customer.deleted ? null : customer.email,
-				now,
+				new Date().toISOString(),
 				githubUserId,
+				fetchedAt,
 			),
 		current && item
 			? db
 					.prepare(
-						`INSERT OR REPLACE INTO subscriptions
+						`INSERT INTO subscriptions
 							(github_user_id, stripe_subscription_id, status, plan, current_period_end, cancel_at_period_end, updated_at)
-						VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						VALUES (?, ?, ?, ?, ?, ?, ?)
+						ON CONFLICT (github_user_id) DO UPDATE SET
+							stripe_subscription_id = excluded.stripe_subscription_id,
+							status = excluded.status,
+							plan = excluded.plan,
+							current_period_end = excluded.current_period_end,
+							cancel_at_period_end = excluded.cancel_at_period_end,
+							updated_at = excluded.updated_at
+						WHERE excluded.updated_at >= subscriptions.updated_at`,
 					)
 					.bind(
 						githubUserId,
@@ -100,12 +118,17 @@ export async function syncCustomer(
 						current.status,
 						item.price.lookup_key,
 						new Date(item.current_period_end * 1000).toISOString(),
-						current.cancel_at_period_end ? 1 : 0,
-						now,
+						// Under flexible billing, the default of the pinned API
+						// version, the customer portal schedules a cancellation
+						// through `cancel_at` and leaves the flag false.
+						current.cancel_at_period_end || current.cancel_at !== null ? 1 : 0,
+						fetchedAt,
 					)
 			: db
-					.prepare("DELETE FROM subscriptions WHERE github_user_id = ?")
-					.bind(githubUserId),
+					.prepare(
+						"DELETE FROM subscriptions WHERE github_user_id = ? AND updated_at <= ?",
+					)
+					.bind(githubUserId, fetchedAt),
 	]);
 	return true;
 }
