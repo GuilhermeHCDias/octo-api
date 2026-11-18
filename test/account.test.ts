@@ -55,6 +55,7 @@ describe("PUT /account, for a user with no account", () => {
 				billing_email: null,
 				created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
 				updated_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
+				checkout_session_id: null,
 			},
 		]);
 		expect(await allSubscriptions()).toEqual([]);
@@ -139,6 +140,7 @@ describe("PUT /account, for a user whose account exists", () => {
 			billing_email: "billing@example.com",
 			created_at: "2026-01-01T00:00:00.000Z",
 			updated_at: "2026-01-01T00:00:00.000Z",
+			checkout_session_id: "cs_test_previous",
 		});
 		await insertSubscription({
 			github_user_id: 583231,
@@ -175,6 +177,7 @@ describe("PUT /account, for a user whose account exists", () => {
 			billing_email: "billing@example.com",
 			created_at: "2026-01-01T00:00:00.000Z",
 			updated_at: expect.not.stringMatching("2026-01-01T00:00:00.000Z"),
+			checkout_session_id: "cs_test_previous",
 		});
 		expect(other).toEqual(
 			expect.objectContaining({

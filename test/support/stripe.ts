@@ -16,14 +16,27 @@ export type FakeSubscription = {
 	metadata: Record<string, string>;
 };
 
+export type FakeSession = {
+	id: string;
+	status: "open" | "complete" | "expired";
+	// The customer the session names, or the one its payment created.
+	customer: string | null;
+};
+
 const PRICES = [
 	{ id: "price_monthly_123", lookup_key: "pro_monthly" },
 	{ id: "price_year_456", lookup_key: "pro_year" },
 ];
 
-// A Checkout URL carries a fragment, as Stripe's do.
-export const CHECKOUT_URL =
-	"https://checkout.stripe.com/c/pay/cs_test_a1B2c3#fidkdWxOYHwnPyd1blpxYHZxWjA0";
+const FIRST_SESSION_ID = "cs_test_a1B2c3";
+
+/** The URL of a session's page. It carries a fragment, as Stripe's do. */
+export function checkoutUrl(sessionId: string): string {
+	return `https://checkout.stripe.com/c/pay/${sessionId}#fidkdWxOYHwnPyd1blpxYHZxWjA0`;
+}
+
+/** The URL of the first session a fake creates. */
+export const CHECKOUT_URL = checkoutUrl(FIRST_SESSION_ID);
 
 function list(data: unknown[]) {
 	return { object: "list", data, has_more: false };
@@ -54,6 +67,18 @@ function subscriptionObject(subscription: FakeSubscription) {
 	};
 }
 
+function sessionObject(session: FakeSession) {
+	return {
+		id: session.id,
+		object: "checkout.session",
+		mode: "subscription",
+		status: session.status,
+		customer: session.customer,
+		// As Stripe: only an open session has a page.
+		url: session.status === "open" ? checkoutUrl(session.id) : null,
+	};
+}
+
 function stripeError(status: number, type: string, message: string): Response {
 	return Response.json(
 		{ error: { type, message } },
@@ -64,8 +89,9 @@ function stripeError(status: number, type: string, message: string): Response {
 
 /**
  * Stripe's API as the Worker uses it: prices by lookup key, Checkout
- * Sessions, customers and their subscriptions. The tests set its state, the
- * "current state in Stripe", and read the sessions it was asked to create.
+ * Sessions (created, read and expired), customers and their subscriptions.
+ * The tests set its state, the "current state in Stripe", and read the
+ * sessions it was asked to create.
  */
 export function fakeStripe() {
 	const customers = new Map<
@@ -76,6 +102,8 @@ export function fakeStripe() {
 	const subscriptions = new Map<string, FakeSubscription>();
 	const requests: RecordedRequest[] = [];
 	const sessions: URLSearchParams[] = [];
+	const checkoutSessions = new Map<string, FakeSession>();
+	const failingPaths = new Set<string>();
 	let outage = false;
 
 	function listSubscriptions(query: URLSearchParams): Response {
@@ -97,7 +125,7 @@ export function fakeStripe() {
 
 	function answer(request: RecordedRequest): Response {
 		requests.push(request);
-		if (outage) {
+		if (outage || failingPaths.has(request.url.pathname)) {
 			return stripeError(500, "api_error", "Stripe is down");
 		}
 		if (
@@ -122,12 +150,46 @@ export function fakeStripe() {
 		if (route === "POST /v1/checkout/sessions") {
 			const params = new URLSearchParams(request.body);
 			sessions.push(params);
-			return Response.json({
-				id: "cs_test_a1B2c3",
-				object: "checkout.session",
-				mode: params.get("mode"),
-				url: CHECKOUT_URL,
-			});
+			const session: FakeSession = {
+				id:
+					sessions.length === 1
+						? FIRST_SESSION_ID
+						: `cs_test_number${sessions.length}`,
+				status: "open",
+				customer: params.get("customer"),
+			};
+			checkoutSessions.set(session.id, session);
+			return Response.json(sessionObject(session));
+		}
+
+		const session = pathname.match(
+			/^\/v1\/checkout\/sessions\/([^/]+)(\/expire)?$/,
+		);
+		if (session) {
+			const found = checkoutSessions.get(session[1] ?? "");
+			if (!found) {
+				return stripeError(
+					404,
+					"invalid_request_error",
+					"No such checkout.session",
+				);
+			}
+			if (request.method === "GET" && !session[2]) {
+				return Response.json(sessionObject(found));
+			}
+			if (request.method === "POST" && session[2]) {
+				// As Stripe: only an open session can be expired.
+				if (found.status !== "open") {
+					return stripeError(
+						400,
+						"invalid_request_error",
+						`Only Checkout Sessions with a status in ["open"] can be expired. This Checkout Session has a status of ${found.status}.`,
+					);
+				}
+				const expired: FakeSession = { ...found, status: "expired" };
+				checkoutSessions.set(expired.id, expired);
+				return Response.json(sessionObject(expired));
+			}
 		}
 
 		if (route === "GET /v1/subscriptions") {
@@ -150,6 +212,22 @@ export function fakeStripe() {
 		requests,
 		/** The parameters of every Checkout Session the Worker created. */
 		sessions,
+
+		/**
+		 * Adds the session, or replaces the one with the same id: a session
+		 * opened earlier, or the state a payment or the passing of time left
+		 * one in.
+		 */
+		setSession(
+			session: Pick<FakeSession, "id" | "status"> & Partial<FakeSession>,
+		): void {
+			checkoutSessions.set(session.id, { customer: null, ...session });
+		},
+
+		/** Every Checkout Session Stripe holds, in the state it is in now. */
+		checkoutSessions(): FakeSession[] {
+			return [...checkoutSessions.values()];
+		},
 
 		setCustomer(id: string, email: string | null): void {
 			customers.set(id, { id, email });
@@ -191,6 +269,11 @@ export function fakeStripe() {
 		/** Makes every later request fail with a 500. */
 		goDown(): void {
 			outage = true;
+		},
+
+		/** Makes every later request for `pathname`, and no other, fail with a 500. */
+		failRequestsTo(pathname: string): void {
+			failingPaths.add(pathname);
 		},
 
 		handle(request: RecordedRequest): Response | Promise<Response> {
