@@ -8,6 +8,7 @@ export type AccountRow = {
 	billing_email: string | null;
 	created_at: string;
 	updated_at: string;
+	checkout_session_id: string | null;
 };
 
 export type SubscriptionRow = {
@@ -40,10 +41,11 @@ export async function insertAccount(
 		billing_email: null,
 		created_at: LONG_AGO,
 		updated_at: LONG_AGO,
+		checkout_session_id: null,
 		...account,
 	};
 	await env.DB.prepare(
-		"INSERT INTO accounts (github_user_id, github_login, github_email, stripe_customer_id, billing_email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO accounts (github_user_id, github_login, github_email, stripe_customer_id, billing_email, created_at, updated_at, checkout_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 	)
 		.bind(
 			row.github_user_id,
@@ -53,6 +55,7 @@ export async function insertAccount(
 			row.billing_email,
 			row.created_at,
 			row.updated_at,
+			row.checkout_session_id,
 		)
 		.run();
 }

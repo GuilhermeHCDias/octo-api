@@ -7,13 +7,13 @@ has access.
 
 ## Routes
 
-| Route                   | What it does                                                                                                                                                                 |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`           | Answers `{"status":"ok"}`.                                                                                                                                                   |
-| `PUT /account`          | Creates the caller's account, or refreshes its GitHub login and e-mail. The app calls it at every login.                                                                     |
-| `GET /account`          | The caller's account: `github_user_id`, `github_login`, `access` and `subscription`. Reads D1 only; 404 when there is no account.                                            |
-| `POST /checkout`        | Body `{"plan":"pro_monthly"}` or `{"plan":"pro_year"}`. Creates a Stripe Checkout Session and answers `{"url":"..."}`. 409 when the account already has a live subscription. |
-| `POST /webhooks/stripe` | Stripe's webhook: verifies the signature, then makes D1 mirror the customer's current subscription.                                                                          |
+| Route                   | What it does                                                                                                                                                                                                                                                                                                                 |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`           | Answers `{"status":"ok"}`.                                                                                                                                                                                                                                                                                                   |
+| `PUT /account`          | Creates the caller's account, or refreshes its GitHub login and e-mail. The app calls it at every login.                                                                                                                                                                                                                     |
+| `GET /account`          | The caller's account: `github_user_id`, `github_login`, `access` and `subscription`. Reads D1 only; 404 when there is no account.                                                                                                                                                                                            |
+| `POST /checkout`        | Body `{"plan":"pro_monthly"}` or `{"plan":"pro_year"}`. Creates a Stripe Checkout Session and answers `{"url":"..."}`. Opening a Checkout expires the account's previous one, so only the last one can be paid. 409 when the account already has a live subscription, even from a payment the webhook has not delivered yet. |
+| `POST /webhooks/stripe` | Stripe's webhook: verifies the signature, then makes D1 mirror the customer's current subscription.                                                                                                                                                                                                                          |
 
 `/account` and `/checkout` need `Authorization: Bearer <token>`, where the token is a GitHub
 token issued to Octo's OAuth App. The API confirms it with GitHub on every call, stores it
@@ -115,6 +115,13 @@ Nothing in the repository creates these; the API assumes they exist.
   out-of-order deliveries are harmless; any other type is acknowledged and ignored.
 - **The customer portal link**, also set up in the Dashboard: changing the card, cancelling and
   seeing invoices happen there, not through the API.
+- **One subscription per customer**, a second layer under the API's own refusal: in the
+  Dashboard (Settings, Checkout and Payment Links), limit customers to one subscription. Stripe
+  then sends a customer who already has an `active`, `past_due`, `unpaid` or `paused`
+  subscription to the customer portal instead of charging them again. It finds that customer by
+  the session's customer, or else by the e-mail address, and it needs the customer portal's
+  login link enabled. Nothing in the API depends on it:
+  <https://docs.stripe.com/payments/checkout/limit-subscriptions>.
 
 ### GitHub
 

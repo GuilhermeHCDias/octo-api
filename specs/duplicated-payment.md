@@ -1,5 +1,5 @@
 # Stop an account from paying for two subscriptions
-status: todo
+status: done
 created: 2026-11-18
 type: fix
 depends-on: none
@@ -55,32 +55,32 @@ means the second of two Checkouts opened by the same account can never be paid.
 - The test and run commands live in `.octo/project.md`.
 
 ## Acceptance criteria
-- [ ] C1. The repository shall hold a new D1 migration that adds the nullable column
+- [x] C1. The repository shall hold a new D1 migration that adds the nullable column
   `checkout_session_id` to `accounts`, leaving the first migration untouched, and on a fresh
   clone `pnpm test` and `pnpm dev` shall run against a local D1 that has it, with no manual
   step.
-- [ ] C2. When `POST /checkout` creates a session, the system shall store that session's id in
+- [x] C2. When `POST /checkout` creates a session, the system shall store that session's id in
   the account's `checkout_session_id` before it answers, change nothing else in D1, and answer
   as today (200, `{"url": ...}`, with `prefilled_email` under the same rule).
-- [ ] C3. When the account's stored session is still `open` in Stripe, the system shall expire
+- [x] C3. When the account's stored session is still `open` in Stripe, the system shall expire
   it before it answers with the new one, whatever the plans of the two; when the stored session
   is already `expired`, the system shall create the new one without trying to expire it.
-- [ ] C4. When the account's stored session is `complete` in Stripe, found so when read or when
+- [x] C4. When the account's stored session is `complete` in Stripe, found so when read or when
   Stripe refuses to expire it, the system shall first make D1 mirror Stripe for that session's
   customer, with the same writes as the webhook's sync, and then create no session and answer
   409 `{"error":"Already subscribed"}` if the account's subscription is live; if it is not
   live, the system shall go on to create the new session from the account as the sync left it.
-- [ ] C5. When the account stores a Stripe customer and its `subscriptions` row is missing or
+- [x] C5. When the account stores a Stripe customer and its `subscriptions` row is missing or
   not live, the system shall make D1 mirror Stripe for that customer before creating anything,
   and answer as in C4 by the result. An account whose row is already live keeps today's
   answer: 409 without a call to Stripe.
-- [ ] C6. When two `POST /checkout` requests of the same account overlap, at most one of the
+- [x] C6. When two `POST /checkout` requests of the same account overlap, at most one of the
   sessions they create shall be left `open` in Stripe, the account shall store that one, and
   every request that answers 200 shall answer that session's URL.
-- [ ] C7. When Stripe fails while the system reads or expires the stored session or syncs the
+- [x] C7. When Stripe fails while the system reads or expires the stored session or syncs the
   customer, the system shall create no new session, leave `checkout_session_id` as it was and
   answer the logged 500 `{"error":"Internal Server Error"}`.
-- [ ] C8. The README shall say, in the `POST /checkout` row, that opening a Checkout expires
+- [x] C8. The README shall say, in the `POST /checkout` row, that opening a Checkout expires
   the account's previous one and that 409 also covers a payment the webhook has not delivered
   yet, and shall add to the Stripe setup the Dashboard setting that limits a customer to one
   subscription, as a second layer that needs the customer portal's login link enabled.
@@ -146,3 +146,20 @@ means the second of two Checkouts opened by the same account can never be paid.
   card `4242 4242 4242 4242`, and call `POST /checkout` again: it answers 409, Stripe shows one
   customer with one subscription, and `GET /account` answers `"access":true` although no
   webhook was delivered.
+
+## Implementation
+- - C1: proven by `test/schema.test.ts` ("has the accounts table with the fields of the spec" and "lets an account have no Checkout Session, and adds the column in a migration of its own"), seen red first; `pnpm migrate:local`, the first half of `pnpm dev`, applied `0002_add_checkout_session_id_to_accounts.sql` to a fresh local D1; 2026-11-18 verify passed (151 passed, 0 failed).
+- - C2: proven by `test/checkout.test.ts` "stores the session's id on the account and changes nothing else in D1", seen red first; the answer's shape stays under the tests that already guarded it.
+- - C3: proven by `test/checkout.test.ts` "expires the open %s Checkout before it answers with a new %s one" (three pairs of plans) and "creates the new session without trying to expire a previous one that already expired", seen red first.
+- - C4: proven by the eight tests of `test/checkout.test.ts` "for an account whose previous Checkout was paid with no webhook delivered" (409 for each live status, the payment that lands between the read and the refused expire, and a new session for the synced customer when the subscription is no longer live), seen red first.
+- - C5: proven by `test/checkout.test.ts` "mirrors the customer in D1, creates no session and answers 409 when Stripe has a live subscription and the account %s" and "mirrors the customer in D1 before it creates the session, when Stripe has no live subscription either", seen red first; the 409 with no call to Stripe stays under the existing "creates no session and answers 409 when the stored subscription is %s".
+- - C6: proven by the two tests of `test/checkout.test.ts` "when two requests of the same account overlap", seen red first, and red again with the losing branch switched off.
+- - C7: proven by the four cases of `test/checkout.test.ts` "when Stripe fails before the new session". Not seen red before the code: they passed on their first run, since the code of C3 to C5 already lets a failure throw. Seen red by mutation instead: with the failure swallowed, all four answered 200.
+- - C8: proven by `test/readme.test.ts` "says that opening a Checkout expires the previous one, and that 409 covers a payment not yet delivered" and "adds the Dashboard's one-subscription limit to the Stripe setup, with the portal's login link it needs", seen red first.
+- - Existing tests changed, none loosened: `test/checkout.test.ts` "changes nothing in D1" became the C2 test, since C2 changes that behavior; two full-row expectations of `test/account.test.ts` gained the new column, and one now proves `PUT /account` keeps a stored session id; the fixtures of "for an account with a Stripe customer" now put that customer, and the matching subscription, in the fake Stripe, since C5 asks Stripe about it.
+- - Decision: the claim of C6 is a conditional `UPDATE`: `checkout_session_id` is set only while it still names the session the request settled. The loser expires its own session and answers the URL of the stored one; when that one is no longer open (a third request closed it), it answers the logged 500. Why: D1 makes the comparison atomic, and an error is safer than a URL that may not work. Cost if wrong: the client retries; and if Stripe fails while the loser expires its own session, that session, whose URL nobody received, stays open and untracked until Stripe expires it within 24 hours.
+- - Decision: a refusal to expire is any invalid-request error of Stripe (400 or 404), and the session is then read again: `complete` goes to C4, `expired` goes on, anything else is the logged 500, as are a `complete` session with no customer and any other failure. Why: it does not depend on the wording of Stripe's message. Cost if wrong: one more read of the session.
+- - Decision: the stored session is settled first, then the stored customer is synced, and C5's sync is skipped when C4's has just mirrored that same customer. A 409 after C4 keeps the paid session's id stored. Why: C4 allows only the sync's writes, and one sync answers both criteria. Cost if wrong: one read of that session on the next Checkout after the subscription ends.
+- - Known cost of C7: a stored session that Stripe does not know (404, as after a change of Stripe account or from the sandbox key to the live one) answers 500 on every Checkout of that account until `checkout_session_id` is cleared in D1. A stored customer of another Stripe account already failed the same way before this change.
+- - Deploy: the remote D1 needs the new migration (`pnpm exec wrangler d1 migrations apply DB --remote`) before the Worker is deployed, because every read of an account now selects `checkout_session_id`; without it `/account` and `/checkout` answer 500.
+- - Verification's end-to-end check: not run in this phase. It needs the real sandbox secrets, `pnpm dev` and a GitHub token of an account, which are the user's; its steps are recorded as the manual checks. `pnpm check` and `pnpm typecheck` passed on 2026-11-18.

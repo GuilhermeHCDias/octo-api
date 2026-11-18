@@ -35,6 +35,30 @@ describe("the README", () => {
 		}
 	});
 
+	it("says that opening a Checkout expires the previous one, and that 409 covers a payment not yet delivered", () => {
+		const row =
+			readme
+				.split("\n")
+				.find((line) => line.startsWith("| `POST /checkout`")) ?? "";
+
+		expect(row).toMatch(/expires the account's previous one/i);
+		expect(row).toMatch(/409 .* a payment the webhook has not delivered yet/);
+	});
+
+	it("adds the Dashboard's one-subscription limit to the Stripe setup, with the portal's login link it needs", () => {
+		const stripeSetup = readme.slice(
+			readme.indexOf("### Stripe"),
+			readme.indexOf("### GitHub"),
+		);
+
+		expect(stripeSetup).toMatch(/one subscription/i);
+		expect(stripeSetup).toMatch(/second layer/i);
+		expect(stripeSetup).toMatch(/login link/i);
+		expect(stripeSetup).toContain(
+			"https://docs.stripe.com/payments/checkout/limit-subscriptions",
+		);
+	});
+
 	it("describes the two prices by their lookup keys, the payment methods and the OAuth App's scope", () => {
 		expect(readme).toContain("pro_monthly");
 		expect(readme).toContain("pro_year");

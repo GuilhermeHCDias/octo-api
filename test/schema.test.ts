@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import firstMigration from "../migrations/0001_create_accounts_and_subscriptions.sql?raw";
 
 async function columnsOf(table: string): Promise<string[]> {
 	const { results } = await env.DB.prepare(
@@ -20,7 +21,18 @@ describe("the local D1 the tests run against", () => {
 			"billing_email",
 			"created_at",
 			"updated_at",
+			"checkout_session_id",
 		]);
+	});
+
+	it("lets an account have no Checkout Session, and adds the column in a migration of its own", async () => {
+		const column = await env.DB.prepare(
+			"SELECT type, \"notnull\" AS required FROM pragma_table_info('accounts') WHERE name = 'checkout_session_id'",
+		).first<{ type: string; required: number }>();
+
+		expect(column).toEqual({ type: "TEXT", required: 0 });
+		expect(firstMigration).toContain("CREATE TABLE accounts");
+		expect(firstMigration).not.toContain("checkout_session_id");
 	});
 
 	it("has the subscriptions table with the fields of the spec", async () => {

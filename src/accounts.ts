@@ -9,6 +9,8 @@ export type Account = {
 	githubLogin: string;
 	githubEmail: string | null;
 	stripeCustomerId: string | null;
+	/** The last Checkout Session the API opened for the account. */
+	checkoutSessionId: string | null;
 	subscription: {
 		status: string;
 		plan: string | null;
@@ -22,6 +24,7 @@ type AccountRow = {
 	github_login: string;
 	github_email: string | null;
 	stripe_customer_id: string | null;
+	checkout_session_id: string | null;
 	status: string | null;
 	plan: string | null;
 	current_period_end: string | null;
@@ -36,7 +39,7 @@ export async function findAccount(
 	const row = await db
 		.prepare(
 			`SELECT a.github_user_id, a.github_login, a.github_email, a.stripe_customer_id,
-				s.status, s.plan, s.current_period_end, s.cancel_at_period_end
+				a.checkout_session_id, s.status, s.plan, s.current_period_end, s.cancel_at_period_end
 			FROM accounts a LEFT JOIN subscriptions s USING (github_user_id)
 			WHERE a.github_user_id = ?`,
 		)
@@ -49,6 +52,7 @@ export async function findAccount(
 		githubLogin: row.github_login,
 		githubEmail: row.github_email,
 		stripeCustomerId: row.stripe_customer_id,
+		checkoutSessionId: row.checkout_session_id,
 		subscription:
 			row.status === null || row.current_period_end === null
 				? null
