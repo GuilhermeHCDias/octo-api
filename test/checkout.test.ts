@@ -463,6 +463,28 @@ describe("POST /checkout, for an account whose previous Checkout was paid with n
 			});
 		},
 	);
+
+	it("creates no session, keeps D1 as it was and answers the logged 500 when the session's customer matches no account", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		payTheSession();
+		// The stamp that leads the sync to the account is gone from Stripe.
+		stripe.setSubscription({
+			id: "sub_new",
+			customer: "cus_new",
+			status: "active",
+			plan: "pro_year",
+			metadata: {},
+		});
+		const before = await databaseContents();
+
+		const response = await checkoutPlan("pro_monthly");
+
+		expect(response.status).toBe(500);
+		expect(await response.json()).toEqual({ error: "Internal Server Error" });
+		expect(logged).toHaveBeenCalled();
+		expect(stripe.sessions).toEqual([]);
+		expect(await databaseContents()).toEqual(before);
+	});
 });
 
 describe("POST /checkout, when two requests of the same account overlap", () => {

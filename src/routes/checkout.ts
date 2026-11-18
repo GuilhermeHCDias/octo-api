@@ -56,14 +56,23 @@ async function settleSession(
 	return customerId;
 }
 
-/** Makes D1 mirror Stripe for the customer, then reads the account again. */
+/**
+ * Makes D1 mirror Stripe for the customer, then reads the account again. A
+ * customer that matches no account throws: nothing was mirrored, so the row
+ * cannot say whether the account pays.
+ */
 async function syncedAccount(
 	db: D1Database,
 	stripe: Stripe,
 	customerId: string,
 	githubUserId: number,
 ): Promise<Account> {
-	await syncCustomer(db, stripe, customerId);
+	const matched = await syncCustomer(db, stripe, customerId);
+	if (!matched) {
+		throw new Error(
+			`Stripe customer ${customerId} of account ${githubUserId} matches no account`,
+		);
+	}
 	const account = await findAccount(db, githubUserId);
 	if (!account) {
 		throw new Error(`Account ${githubUserId} is missing right after its sync`);
