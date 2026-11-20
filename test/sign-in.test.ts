@@ -101,6 +101,18 @@ describe("GET /sign-in/apple", () => {
 });
 
 describe.each(["github", "apple"])("GET /sign-in/%s", (provider) => {
+	it("ties the sign-in to the browser with a cookie that lives as long as the sign-in's state, 10 minutes", async () => {
+		const response = await startSignIn(openBrowser(), provider, challenge);
+
+		const cookies = response.headers.getSetCookie();
+		expect(cookies).toHaveLength(1);
+		expect(cookies[0]).toMatch(/;\s*Max-Age=600(;|$)/i);
+		const [state] = await allVerifications();
+		const secondsLeft =
+			(new Date(state?.expiresAt ?? 0).getTime() - Date.now()) / 1000;
+		expect(Math.round(secondsLeft / 60)).toBe(10);
+	});
+
 	it.each([
 		["is missing", ""],
 		["is empty", "?challenge="],

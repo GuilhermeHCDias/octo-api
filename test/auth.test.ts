@@ -1,4 +1,4 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	allSessions,
@@ -36,6 +36,19 @@ function call(
 		headers: { "Content-Type": "application/json", ...headers },
 		body: route.body ? JSON.stringify(route.body) : undefined,
 	});
+}
+
+/**
+ * The statements D1 is asked to prepare from the call on, as the Worker and
+ * Better Auth send them.
+ */
+function statementsAskedOfD1(): () => string[] {
+	const prepare = vi.spyOn(
+		Object.getPrototypeOf(env.DB) as D1Database,
+		"prepare",
+	);
+	return () =>
+		prepare.mock.calls.map(([statement]) => statement.replace(/\s+/g, " "));
 }
 
 function signOut(headers: Record<string, string>): Promise<Response> {
@@ -79,6 +92,32 @@ describe.each(authenticatedRoutes)("$method $path", (route) => {
 
 		expect(response.status).toBe(200);
 		expect(github.requests).toEqual([]);
+	});
+
+	it("reads the session from D1 without reading D1's schema first", async () => {
+		const statements = statementsAskedOfD1();
+
+		const response = await call(route, { Authorization: `Bearer ${token}` });
+
+		expect(response.status).toBe(200);
+		expect(statements().join("\n")).toContain('"session"');
+		expect(
+			statements().filter((statement) =>
+				/sqlite_master|pragma/i.test(statement),
+			),
+		).toEqual([]);
+	});
+
+	it("asks D1 nothing for a token whose signature is not the API's", async () => {
+		const statements = statementsAskedOfD1();
+
+		const response = await call(route, {
+			Authorization:
+				"Bearer Zx8Qw2Lr5Tn9Vb3Mk7Hj1Gf4Ds6Ap0Uy.c2lnbmF0dXJlLW9mLW5vYm9keS1hdC1hbGwtMDEyMzQ1Ng",
+		});
+
+		expect(response.status).toBe(401);
+		expect(statements()).toEqual([]);
 	});
 
 	it("answers 401 when there is no Authorization header", async () => {

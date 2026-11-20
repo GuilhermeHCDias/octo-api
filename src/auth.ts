@@ -109,6 +109,13 @@ export function createAuth(
 		advanced: {
 			// Behind Cloudflare the client's address is in this header alone.
 			ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
+			// Better Auth is built for each request, so its runtime schema check
+			// would read the whole schema from D1 on every one of them.
+			// test/schema.test.ts asks Better Auth the same question.
+			database: { validateSchema: false },
+			// The cookie that ties a sign-in to its browser lives as long as the
+			// state it guards, 10 minutes; Better Auth gives it 5.
+			cookies: { state: { attributes: { maxAge: 600 } } },
 		},
 		// Closed to clients, and still called by the API itself. A sign-in
 		// starts at GET /sign-in/<provider> and its code is traded at

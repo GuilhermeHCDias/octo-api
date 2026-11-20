@@ -269,8 +269,9 @@ Better Auth's four tables (`user`, `session`, `account` and `verification`) keep
 and columns, in camelCase, and only Better Auth writes them. Its command line cannot reach D1,
 so they are written by hand in a migration, and `test/schema.test.ts` asks Better Auth whether
 any table, column or index is missing: after an upgrade of Better Auth or a new plugin, a
-failure there means a new migration. Octo's own tables, `billing` and `subscriptions`, hang on
-the user's id.
+failure there means a new migration. That test is the only check: the Worker does not ask D1
+for its schema at run time, which would cost every request nine statements. Octo's own tables,
+`billing` and `subscriptions`, hang on the user's id.
 
 ## Continuous integration
 
