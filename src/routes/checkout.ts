@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import Stripe from "stripe";
 import { type Account, findAccount, LIVE_STATUSES } from "../accounts";
-import { type AuthenticatedEnv, requireGitHubUser } from "../github";
+import { type AuthenticatedEnv, requireUser } from "../session";
 import { stripeClient } from "../stripe";
 import { syncCustomer } from "../sync";
 
@@ -14,7 +14,7 @@ function hasLiveSubscription({ subscription }: Account): boolean {
 }
 
 /**
- * Closes the Checkout Session the account opened before, so that it can no
+ * Closes the Checkout Session the user opened before, so that it can no
  * longer be paid: an open one is expired. Returns the customer of a session
  * that was paid instead, and null for one that expired unpaid. Any failure
  * throws: the caller opens no new session unless this one is known closed.
@@ -58,33 +58,31 @@ async function settleSession(
 
 /**
  * Makes D1 mirror Stripe for the customer, then reads the account again. A
- * customer that matches no account throws: nothing was mirrored, so the row
- * cannot say whether the account pays.
+ * customer that matches no user throws: nothing was mirrored, so the row
+ * cannot say whether the user pays.
  */
 async function syncedAccount(
 	db: D1Database,
 	stripe: Stripe,
 	customerId: string,
-	githubUserId: number,
+	userId: string,
 ): Promise<Account> {
 	const matched = await syncCustomer(db, stripe, customerId);
 	if (!matched) {
 		throw new Error(
-			`Stripe customer ${customerId} of account ${githubUserId} matches no account`,
+			`Stripe customer ${customerId} of user ${userId} matches no user`,
 		);
 	}
-	const account = await findAccount(db, githubUserId);
+	const account = await findAccount(db, userId);
 	if (!account) {
-		throw new Error(`Account ${githubUserId} is missing right after its sync`);
+		throw new Error(`User ${userId} is missing right after its sync`);
 	}
 	return account;
 }
 
 const checkout = new Hono<AuthenticatedEnv>();
 
-checkout.use(requireGitHubUser);
-
-checkout.post("/", async (c) => {
+checkout.post("/", requireUser, async (c) => {
 	const body: unknown = await c.req.json().catch(() => null);
 	const plan =
 		typeof body === "object" && body !== null && "plan" in body
@@ -94,8 +92,12 @@ checkout.post("/", async (c) => {
 		return c.json({ error: "Invalid plan" }, 400);
 	}
 
-	let account = await findAccount(c.env.DB, c.var.githubUser.id);
-	if (!account) return c.json({ error: "Account not found" }, 404);
+	// A user who never opened a Checkout has no billing row, and checks out
+	// as an account with no customer and no previous Checkout.
+	let account = await findAccount(c.env.DB, c.var.user.id);
+	if (!account) {
+		throw new Error(`User ${c.var.user.id} has a session and no row`);
+	}
 	// A live row refuses with no call to Stripe. A stale one can only delay a
 	// new Checkout until the webhook arrives, never allow a second payment.
 	if (hasLiveSubscription(account)) {
@@ -104,9 +106,9 @@ checkout.post("/", async (c) => {
 
 	const stripe = stripeClient(c.env);
 
-	// One payable Checkout per account: the previous session is closed before
+	// One payable Checkout per user: the previous session is closed before
 	// another opens. A paid one means a subscription the webhook may not have
-	// delivered yet, so Stripe is asked, not D1, whether the account pays.
+	// delivered yet, so Stripe is asked, not D1, whether the user pays.
 	const previousSessionId = account.checkoutSessionId;
 	const payingCustomerId = previousSessionId
 		? await settleSession(stripe, previousSessionId)
@@ -116,13 +118,13 @@ checkout.post("/", async (c) => {
 			c.env.DB,
 			stripe,
 			payingCustomerId,
-			account.githubUserId,
+			account.userId,
 		);
 		if (hasLiveSubscription(account)) {
 			return c.json({ error: "Already subscribed" }, 409);
 		}
 	}
-	// The same question for the customer the account stores, unless the sync
+	// The same question for the customer the user stores, unless the sync
 	// above has just answered it.
 	if (
 		account.stripeCustomerId &&
@@ -132,7 +134,7 @@ checkout.post("/", async (c) => {
 			c.env.DB,
 			stripe,
 			account.stripeCustomerId,
-			account.githubUserId,
+			account.userId,
 		);
 		if (hasLiveSubscription(account)) {
 			return c.json({ error: "Already subscribed" }, 409);
@@ -147,15 +149,14 @@ checkout.post("/", async (c) => {
 	const price = prices.data[0];
 	if (!price) throw new Error(`Stripe has no active price for ${plan}`);
 
-	// The GitHub user id on the subscription is how the webhook finds the
-	// account of a first payment, whatever the order of the events. The session
-	// lists no payment methods: the Stripe Dashboard decides them.
-	const githubUserId = String(account.githubUserId);
+	// The user's id on the subscription is how the webhook finds the user of
+	// a first payment, whatever the order of the events. The session lists no
+	// payment methods: the Stripe Dashboard decides them.
 	const session = await stripe.checkout.sessions.create({
 		mode: "subscription",
 		line_items: [{ price: price.id, quantity: 1 }],
-		client_reference_id: githubUserId,
-		subscription_data: { metadata: { github_user_id: githubUserId } },
+		client_reference_id: account.userId,
+		subscription_data: { metadata: { user_id: account.userId } },
 		success_url: c.env.CHECKOUT_SUCCESS_URL,
 		cancel_url: c.env.CHECKOUT_CANCEL_URL,
 		// A returning customer stays one customer in Stripe. A first purchase
@@ -164,14 +165,22 @@ checkout.post("/", async (c) => {
 	});
 	if (!session.url) throw new Error("Stripe returned a session with no URL");
 
-	// The account's row is where the one Checkout is claimed. The claim holds
-	// only if the row still names the session settled above: an overlapping
-	// request that stored its own session first keeps it, and this one loses.
+	// The user's billing row is where the one Checkout is claimed, and a first
+	// Checkout creates it. The claim holds only if the row still names the
+	// session settled above, or does not exist yet: an overlapping request
+	// that stored its own session first keeps it, and this one loses.
 	const claim = await c.env.DB.prepare(
-		`UPDATE accounts SET checkout_session_id = ?1
-		WHERE github_user_id = ?2 AND checkout_session_id IS ?3`,
+		`INSERT INTO billing (user_id, checkout_session_id, created_at, updated_at)
+		VALUES (?2, ?1, ?4, ?4)
+		ON CONFLICT (user_id) DO UPDATE SET checkout_session_id = excluded.checkout_session_id
+		WHERE billing.checkout_session_id IS ?3`,
 	)
-		.bind(session.id, account.githubUserId, previousSessionId)
+		.bind(
+			session.id,
+			account.userId,
+			previousSessionId,
+			new Date().toISOString(),
+		)
 		.run();
 	let checkoutUrl = session.url;
 	if (claim.meta.changes === 0) {
@@ -179,16 +188,16 @@ checkout.post("/", async (c) => {
 		// the winner's: a double click leads both answers to the one Checkout.
 		await stripe.checkout.sessions.expire(session.id);
 		const winnerId = await c.env.DB.prepare(
-			"SELECT checkout_session_id FROM accounts WHERE github_user_id = ?",
+			"SELECT checkout_session_id FROM billing WHERE user_id = ?",
 		)
-			.bind(account.githubUserId)
+			.bind(account.userId)
 			.first<string>("checkout_session_id");
 		const winner = winnerId
 			? await stripe.checkout.sessions.retrieve(winnerId)
 			: null;
 		if (winner?.status !== "open" || !winner.url) {
 			throw new Error(
-				`Account ${account.githubUserId} lost its Checkout to a session that is not open`,
+				`User ${account.userId} lost its Checkout to a session that is not open`,
 			);
 		}
 		checkoutUrl = winner.url;
@@ -196,11 +205,9 @@ checkout.post("/", async (c) => {
 
 	// Best effort: on a first purchase the e-mail field arrives filled in and
 	// stays editable, which `customer_email` would lock.
-	if (account.stripeCustomerId || !account.githubEmail) {
-		return c.json({ url: checkoutUrl });
-	}
+	if (account.stripeCustomerId) return c.json({ url: checkoutUrl });
 	const url = new URL(checkoutUrl);
-	url.searchParams.set("prefilled_email", account.githubEmail);
+	url.searchParams.set("prefilled_email", account.email);
 	return c.json({ url: url.href });
 });
 

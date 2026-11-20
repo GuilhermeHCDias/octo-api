@@ -8,7 +8,7 @@ export type RecordedRequest = {
 };
 
 export type FakeService = {
-	host: string;
+	hosts: string[];
 	// A promise when the fake holds its answer back, as a slow service does.
 	handle(request: RecordedRequest): Response | Promise<Response>;
 };
@@ -31,7 +31,9 @@ export function installFakeNetwork(...services: FakeService[]): void {
 			// Stripe SDK's are.
 			body: new TextDecoder().decode(await request.arrayBuffer()),
 		};
-		const service = services.find(({ host }) => host === recorded.url.host);
+		const service = services.find(({ hosts }) =>
+			hosts.includes(recorded.url.host),
+		);
 		if (!service) {
 			throw new Error(
 				`A test reached the network: ${recorded.method} ${recorded.url}`,

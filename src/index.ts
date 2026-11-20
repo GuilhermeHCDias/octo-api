@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import account from "./routes/account";
+import auth from "./routes/auth";
 import checkout from "./routes/checkout";
 import health from "./routes/health";
+import signIn from "./routes/sign-in";
 import webhooks from "./routes/webhooks";
 
 const app = new Hono<{ Bindings: CloudflareBindings }>();
@@ -23,6 +25,8 @@ app.route("/health", health);
 app.route("/account", account);
 app.route("/checkout", checkout);
 app.route("/webhooks", webhooks);
+app.route("/sign-in", signIn);
+app.route("/api/auth", auth);
 
 app.notFound((c) => c.json({ error: "Not Found" }, 404));
 

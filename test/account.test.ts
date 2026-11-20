@@ -1,27 +1,34 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	allAccounts,
-	allSubscriptions,
 	databaseContents,
 	emptyDatabase,
-	insertAccount,
+	insertBilling,
 	insertSubscription,
+	insertUser,
 } from "./support/database";
-import { fakeGitHub } from "./support/github";
+import { fakeGitHub, type GitHubPerson } from "./support/github";
 import { installFakeNetwork } from "./support/network";
+import { signIn } from "./support/sign-in";
 import { fakeStripe } from "./support/stripe";
 
-const OCTOCAT = { id: 583231, login: "octocat" };
-const TOKEN = "gho_octocat";
+const OCTOCAT: GitHubPerson = {
+	id: 583231,
+	login: "octocat",
+	name: "The Octocat",
+	emails: [{ email: "octocat@github.com", primary: true, verified: true }],
+};
 
 let github: ReturnType<typeof fakeGitHub>;
 let stripe: ReturnType<typeof fakeStripe>;
+let token: string;
+// The id Better Auth gave the user of the sign-in.
+let userId: string;
 
-function account(method: "PUT" | "GET", token = TOKEN): Promise<Response> {
+function account(method: string, bearer?: string): Promise<Response> {
 	return exports.default.fetch("http://example.com/account", {
 		method,
-		headers: { Authorization: `Bearer ${token}` },
+		headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
 	});
 }
 
@@ -30,248 +37,74 @@ beforeEach(async () => {
 	github = fakeGitHub();
 	stripe = fakeStripe();
 	installFakeNetwork(github, stripe);
+	({ token, userId } = await signIn(github, OCTOCAT));
+	github.requests.length = 0;
 });
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("PUT /account, for a user with no account", () => {
-	it("creates the account with the GitHub user id, login and primary verified e-mail", async () => {
-		github.issueToken(TOKEN, OCTOCAT, [
-			{ email: "old@example.com", primary: false, verified: true },
-			{ email: "octocat@github.com", primary: true, verified: true },
-		]);
-
-		const response = await account("PUT");
-
-		expect(response.status).toBe(200);
-		expect(await allAccounts()).toEqual([
-			{
-				github_user_id: 583231,
-				github_login: "octocat",
-				github_email: "octocat@github.com",
-				stripe_customer_id: null,
-				billing_email: null,
-				created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
-				updated_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
-				checkout_session_id: null,
-			},
-		]);
-		expect(await allSubscriptions()).toEqual([]);
-	});
-
-	it("answers with the body of GET /account", async () => {
-		github.issueToken(TOKEN, OCTOCAT);
-
-		const created = await account("PUT");
-		const read = await account("GET");
-
-		expect(await created.json()).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
-			access: false,
-			subscription: null,
-		});
-		expect(created.headers.get("content-type")).toContain("application/json");
-		expect(await read.json()).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
-			access: false,
-			subscription: null,
-		});
-	});
-
-	it.each([
-		[
-			"has no primary address that is verified",
-			[
-				{ email: "unverified@example.com", primary: true, verified: false },
-				{ email: "secondary@example.com", primary: false, verified: true },
-			],
-		],
-		["has no address", []],
-		["was issued without the user:email scope", null],
-	])(
-		"creates the account with a null e-mail when the token %s",
-		async (_case, emails) => {
-			github.issueToken(TOKEN, OCTOCAT, emails);
-
-			const response = await account("PUT");
-
-			expect(response.status).toBe(200);
-			expect(await allAccounts()).toEqual([
-				expect.objectContaining({ github_user_id: 583231, github_email: null }),
-			]);
-		},
-	);
-
-	it("never calls Stripe", async () => {
-		github.issueToken(TOKEN, OCTOCAT);
-
-		await account("PUT");
-
-		expect(stripe.requests).toEqual([]);
-	});
-
-	it("creates nothing and answers 500 when GitHub fails to list the e-mails", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
-		github.issueToken(TOKEN, OCTOCAT);
-		const emailsFail = github.handle;
-		github.handle = (request) =>
-			request.url.pathname === "/user/emails"
-				? Response.json({ message: "Unavailable" }, { status: 503 })
-				: emailsFail(request);
-
-		const response = await account("PUT");
-
-		expect(response.status).toBe(500);
-		expect(await allAccounts()).toEqual([]);
-	});
-});
-
-describe("PUT /account, for a user whose account exists", () => {
-	beforeEach(async () => {
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "old-login",
-			github_email: "old@example.com",
-			stripe_customer_id: "cus_octocat",
-			billing_email: "billing@example.com",
-			created_at: "2026-01-01T00:00:00.000Z",
-			updated_at: "2026-01-01T00:00:00.000Z",
-			checkout_session_id: "cs_test_previous",
-		});
-		await insertSubscription({
-			github_user_id: 583231,
-			stripe_subscription_id: "sub_octocat",
-			status: "active",
-			plan: "pro_year",
-			current_period_end: "2027-11-14T12:00:00.000Z",
-			cancel_at_period_end: 1,
-			updated_at: "2026-01-01T00:00:00.000Z",
-		});
-		// Another account, which the request must leave alone.
-		await insertAccount({
-			github_user_id: 1,
-			github_login: "mojombo",
-			github_email: "mojombo@example.com",
-		});
-	});
-
-	it("refreshes the login and the e-mail, and keeps the Stripe data and the subscription", async () => {
-		github.issueToken(TOKEN, { id: 583231, login: "octocat" }, [
-			{ email: "octocat@github.com", primary: true, verified: true },
-		]);
-		const subscriptionsBefore = await allSubscriptions();
-
-		const response = await account("PUT");
-
-		expect(response.status).toBe(200);
-		const [other, refreshed] = await allAccounts();
-		expect(refreshed).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
-			github_email: "octocat@github.com",
-			stripe_customer_id: "cus_octocat",
-			billing_email: "billing@example.com",
-			created_at: "2026-01-01T00:00:00.000Z",
-			updated_at: expect.not.stringMatching("2026-01-01T00:00:00.000Z"),
-			checkout_session_id: "cs_test_previous",
-		});
-		expect(other).toEqual(
-			expect.objectContaining({
-				github_login: "mojombo",
-				github_email: "mojombo@example.com",
-			}),
-		);
-		expect(await allSubscriptions()).toEqual(subscriptionsBefore);
-		expect(stripe.requests).toEqual([]);
-	});
-
-	it("clears the e-mail when GitHub no longer returns one", async () => {
-		github.issueToken(TOKEN, OCTOCAT, []);
-
-		await account("PUT");
-
-		expect(await allAccounts()).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, github_email: null }),
-		);
-	});
-
-	it("answers with the account's subscription and access", async () => {
-		github.issueToken(TOKEN, OCTOCAT);
-
-		const response = await account("PUT");
-
-		expect(await response.json()).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
-			access: true,
-			subscription: {
-				status: "active",
-				plan: "pro_year",
-				current_period_end: "2027-11-14T12:00:00.000Z",
-				cancel_at_period_end: true,
-			},
-		});
-	});
-});
-
 describe("GET /account", () => {
-	beforeEach(() => {
-		github.issueToken(TOKEN, OCTOCAT, [
-			{ email: "octocat@github.com", primary: true, verified: true },
-		]);
-	});
-
-	it("answers 404 and creates nothing when the user has no account", async () => {
-		await insertAccount({ github_user_id: 1, github_login: "mojombo" });
+	it("answers 200 with no access and a null subscription for a user who never opened a Checkout", async () => {
 		const before = await databaseContents();
+		expect(before.billing).toEqual([]);
 
-		const response = await account("GET");
-
-		expect(response.status).toBe(404);
-		expect(await response.json()).toEqual({ error: "Account not found" });
-		expect(await databaseContents()).toEqual(before);
-	});
-
-	it("answers 200 with a null subscription and no access for an account that never paid", async () => {
-		await insertAccount({ github_user_id: 583231, github_login: "octocat" });
-
-		const response = await account("GET");
+		const response = await account("GET", token);
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get("content-type")).toContain("application/json");
 		expect(await response.json()).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
+			user_id: userId,
+			email: "octocat@github.com",
+			name: "The Octocat",
+			access: false,
+			subscription: null,
+		});
+		// Reading the account creates nothing.
+		expect(await databaseContents()).toEqual(before);
+	});
+
+	it("answers the same for a user who opened a Checkout and never paid", async () => {
+		await insertBilling({
+			user_id: userId,
+			checkout_session_id: "cs_test_previous",
+		});
+
+		const response = await account("GET", token);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			user_id: userId,
+			email: "octocat@github.com",
+			name: "The Octocat",
 			access: false,
 			subscription: null,
 		});
 	});
 
 	it("answers with the subscription's status, plan, period end in ISO 8601 UTC and scheduled cancellation", async () => {
-		await insertAccount({ github_user_id: 583231, github_login: "octocat" });
+		await insertBilling({ user_id: userId, stripe_customer_id: "cus_octocat" });
 		await insertSubscription({
-			github_user_id: 583231,
+			user_id: userId,
 			status: "active",
-			plan: "pro_monthly",
-			current_period_end: "2026-12-14T12:00:00.000Z",
-			cancel_at_period_end: 0,
+			plan: "pro_year",
+			current_period_end: "2027-11-14T12:00:00.000Z",
+			cancel_at_period_end: 1,
 		});
 
-		const response = await account("GET");
+		const response = await account("GET", token);
 
 		expect(await response.json()).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
+			user_id: userId,
+			email: "octocat@github.com",
+			name: "The Octocat",
 			access: true,
 			subscription: {
 				status: "active",
-				plan: "pro_monthly",
-				current_period_end: "2026-12-14T12:00:00.000Z",
-				cancel_at_period_end: false,
+				plan: "pro_year",
+				current_period_end: "2027-11-14T12:00:00.000Z",
+				cancel_at_period_end: true,
 			},
 		});
 	});
@@ -286,54 +119,87 @@ describe("GET /account", () => {
 		["incomplete_expired", false],
 		["paused", false],
 	])("for a %s subscription, answers access %s", async (status, access) => {
-		await insertAccount({ github_user_id: 583231, github_login: "octocat" });
-		await insertSubscription({ github_user_id: 583231, status });
+		await insertBilling({ user_id: userId });
+		await insertSubscription({ user_id: userId, status });
 
-		const body = await (await account("GET")).json<{
+		const body = await (await account("GET", token)).json<{
 			access: boolean;
-			subscription: { status: string };
+			subscription: { status: string; cancel_at_period_end: boolean };
 		}>();
 
 		expect(body.access).toBe(access);
 		expect(body.subscription.status).toBe(status);
+		expect(body.subscription.cancel_at_period_end).toBe(false);
 	});
 
 	it("reads another user's subscription for nobody but that user", async () => {
-		await insertAccount({ github_user_id: 583231, github_login: "octocat" });
-		await insertAccount({ github_user_id: 1, github_login: "mojombo" });
-		await insertSubscription({ github_user_id: 1, status: "active" });
+		await insertUser({ id: "user_mojombo" });
+		await insertBilling({ user_id: "user_mojombo" });
+		await insertSubscription({ user_id: "user_mojombo", status: "active" });
 
-		const body = await (await account("GET")).json();
+		const body = await (await account("GET", token)).json();
 
 		expect(body).toEqual({
-			github_user_id: 583231,
-			github_login: "octocat",
+			user_id: userId,
+			email: "octocat@github.com",
+			name: "The Octocat",
 			access: false,
 			subscription: null,
 		});
 	});
 
-	it("reads from D1 alone and changes nothing", async () => {
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "old-login",
-			github_email: "old@example.com",
-			stripe_customer_id: "cus_octocat",
+	it("answers each of two signed-in users their own account", async () => {
+		const mojombo = await signIn(github, {
+			id: 1,
+			login: "mojombo",
+			emails: [{ email: "tom@example.com", primary: true, verified: true }],
 		});
-		await insertSubscription({ github_user_id: 583231, status: "active" });
+		await insertBilling({ user_id: mojombo.userId });
+		await insertSubscription({ user_id: mojombo.userId, status: "active" });
+
+		const theirs = await (await account("GET", mojombo.token)).json();
+		const mine = await (await account("GET", token)).json();
+
+		expect(theirs).toEqual(
+			expect.objectContaining({
+				user_id: mojombo.userId,
+				email: "tom@example.com",
+				// GitHub's profile has no name: Better Auth takes the login.
+				name: "mojombo",
+				access: true,
+			}),
+		);
+		expect(mine).toEqual(
+			expect.objectContaining({ user_id: userId, access: false }),
+		);
+	});
+
+	it("reads from D1 alone and changes nothing", async () => {
+		await insertBilling({ user_id: userId, stripe_customer_id: "cus_octocat" });
+		await insertSubscription({ user_id: userId, status: "active" });
 		const before = await databaseContents();
 
-		const response = await account("GET");
+		const response = await account("GET", token);
 
-		// The stored login, not the one GitHub has now.
-		expect(await response.json()).toEqual(
-			expect.objectContaining({ github_login: "old-login" }),
-		);
+		expect(response.status).toBe(200);
 		expect(await databaseContents()).toEqual(before);
 		expect(stripe.requests).toEqual([]);
-		// GitHub is asked for the token check and nothing else.
-		expect(github.requests.map(({ url }) => url.pathname)).toEqual([
-			"/applications/github_client_id_placeholder/token",
-		]);
+		expect(github.requests).toEqual([]);
+	});
+});
+
+describe("PUT /account", () => {
+	it.each([
+		["a signed-in user", true],
+		["anybody else", false],
+	])("no longer exists: answers 404 to %s", async (_who, signedIn) => {
+		const before = await databaseContents();
+
+		const response = await account("PUT", signedIn ? token : undefined);
+
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ error: "Not Found" });
+		expect(await databaseContents()).toEqual(before);
+		expect(github.requests).toEqual([]);
 	});
 });

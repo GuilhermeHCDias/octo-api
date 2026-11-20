@@ -1,18 +1,64 @@
 import { env } from "cloudflare:workers";
 
-export type AccountRow = {
-	github_user_id: number;
-	github_login: string;
-	github_email: string | null;
+// Better Auth's rows, with its own column names.
+export type UserRow = {
+	id: string;
+	name: string;
+	email: string;
+	emailVerified: number;
+	image: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type SessionRow = {
+	id: string;
+	expiresAt: string;
+	token: string;
+	createdAt: string;
+	updatedAt: string;
+	ipAddress: string | null;
+	userAgent: string | null;
+	userId: string;
+};
+
+/** A row of `account`: the link of a user to a provider. */
+export type ProviderAccountRow = {
+	id: string;
+	accountId: string;
+	providerId: string;
+	userId: string;
+	accessToken: string | null;
+	refreshToken: string | null;
+	idToken: string | null;
+	accessTokenExpiresAt: string | null;
+	refreshTokenExpiresAt: string | null;
+	scope: string | null;
+	password: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type VerificationRow = {
+	id: string;
+	identifier: string;
+	value: string;
+	expiresAt: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type BillingRow = {
+	user_id: string;
 	stripe_customer_id: string | null;
 	billing_email: string | null;
+	checkout_session_id: string | null;
 	created_at: string;
 	updated_at: string;
-	checkout_session_id: string | null;
 };
 
 export type SubscriptionRow = {
-	github_user_id: number;
+	user_id: string;
 	stripe_subscription_id: string;
 	status: string;
 	plan: string | null;
@@ -23,49 +69,79 @@ export type SubscriptionRow = {
 
 const LONG_AGO = "2026-01-01T00:00:00.000Z";
 
-/** Empties both tables: the tests of a file share one database. */
+/** Empties every table: the tests of a file share one database. */
 export async function emptyDatabase(): Promise<void> {
-	await env.DB.batch([
-		env.DB.prepare("DELETE FROM subscriptions"),
-		env.DB.prepare("DELETE FROM accounts"),
-	]);
+	await env.DB.batch(
+		[
+			"subscriptions",
+			"billing",
+			"session",
+			"account",
+			"verification",
+			'"user"',
+		].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),
+	);
 }
 
-export async function insertAccount(
-	account: Pick<AccountRow, "github_user_id" | "github_login"> &
-		Partial<AccountRow>,
+/** A user who never signed in: for the tests that need only the row. */
+export async function insertUser(
+	user: Pick<UserRow, "id"> & Partial<UserRow>,
 ): Promise<void> {
-	const row: AccountRow = {
-		github_email: null,
-		stripe_customer_id: null,
-		billing_email: null,
-		created_at: LONG_AGO,
-		updated_at: LONG_AGO,
-		checkout_session_id: null,
-		...account,
+	const row: UserRow = {
+		name: user.id,
+		email: `${user.id}@example.com`,
+		emailVerified: 1,
+		image: null,
+		createdAt: LONG_AGO,
+		updatedAt: LONG_AGO,
+		...user,
 	};
 	await env.DB.prepare(
-		"INSERT INTO accounts (github_user_id, github_login, github_email, stripe_customer_id, billing_email, created_at, updated_at, checkout_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		'INSERT INTO "user" (id, name, email, emailVerified, image, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
 	)
 		.bind(
-			row.github_user_id,
-			row.github_login,
-			row.github_email,
+			row.id,
+			row.name,
+			row.email,
+			row.emailVerified,
+			row.image,
+			row.createdAt,
+			row.updatedAt,
+		)
+		.run();
+}
+
+export async function insertBilling(
+	billing: Pick<BillingRow, "user_id"> & Partial<BillingRow>,
+): Promise<void> {
+	const row: BillingRow = {
+		stripe_customer_id: null,
+		billing_email: null,
+		checkout_session_id: null,
+		created_at: LONG_AGO,
+		updated_at: LONG_AGO,
+		...billing,
+	};
+	await env.DB.prepare(
+		"INSERT INTO billing (user_id, stripe_customer_id, billing_email, checkout_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+	)
+		.bind(
+			row.user_id,
 			row.stripe_customer_id,
 			row.billing_email,
+			row.checkout_session_id,
 			row.created_at,
 			row.updated_at,
-			row.checkout_session_id,
 		)
 		.run();
 }
 
 export async function insertSubscription(
-	subscription: Pick<SubscriptionRow, "github_user_id" | "status"> &
+	subscription: Pick<SubscriptionRow, "user_id" | "status"> &
 		Partial<SubscriptionRow>,
 ): Promise<void> {
 	const row: SubscriptionRow = {
-		stripe_subscription_id: `sub_of_${subscription.github_user_id}`,
+		stripe_subscription_id: `sub_of_${subscription.user_id}`,
 		plan: "pro_monthly",
 		current_period_end: "2026-12-14T12:00:00.000Z",
 		cancel_at_period_end: 0,
@@ -73,10 +149,10 @@ export async function insertSubscription(
 		...subscription,
 	};
 	await env.DB.prepare(
-		"INSERT INTO subscriptions (github_user_id, stripe_subscription_id, status, plan, current_period_end, cancel_at_period_end, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO subscriptions (user_id, stripe_subscription_id, status, plan, current_period_end, cancel_at_period_end, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	)
 		.bind(
-			row.github_user_id,
+			row.user_id,
 			row.stripe_subscription_id,
 			row.status,
 			row.plan,
@@ -87,24 +163,45 @@ export async function insertSubscription(
 		.run();
 }
 
-export async function allAccounts(): Promise<AccountRow[]> {
+async function rowsOf<Row>(table: string, order: string): Promise<Row[]> {
 	const { results } = await env.DB.prepare(
-		"SELECT * FROM accounts ORDER BY github_user_id",
-	).all<AccountRow>();
+		`SELECT * FROM ${table} ORDER BY ${order}`,
+	).all<Row>();
 	return results;
 }
 
-export async function allSubscriptions(): Promise<SubscriptionRow[]> {
-	const { results } = await env.DB.prepare(
-		"SELECT * FROM subscriptions ORDER BY github_user_id",
-	).all<SubscriptionRow>();
-	return results;
+export function allUsers(): Promise<UserRow[]> {
+	return rowsOf('"user"', "createdAt, id");
 }
 
-/** Every row of both tables, to assert that a request wrote nothing. */
+export function allSessions(): Promise<SessionRow[]> {
+	return rowsOf("session", "createdAt, id");
+}
+
+export function allProviderAccounts(): Promise<ProviderAccountRow[]> {
+	return rowsOf("account", "createdAt, id");
+}
+
+export function allVerifications(): Promise<VerificationRow[]> {
+	return rowsOf("verification", "createdAt, id");
+}
+
+export function allBilling(): Promise<BillingRow[]> {
+	return rowsOf("billing", "user_id");
+}
+
+export function allSubscriptions(): Promise<SubscriptionRow[]> {
+	return rowsOf("subscriptions", "user_id");
+}
+
+/** Every row of every table, to assert that a request wrote nothing. */
 export async function databaseContents() {
 	return {
-		accounts: await allAccounts(),
+		users: await allUsers(),
+		sessions: await allSessions(),
+		providerAccounts: await allProviderAccounts(),
+		verifications: await allVerifications(),
+		billing: await allBilling(),
 		subscriptions: await allSubscriptions(),
 	};
 }
