@@ -1,12 +1,14 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	allAccounts,
+	allBilling,
 	allSubscriptions,
+	allUsers,
 	databaseContents,
 	emptyDatabase,
-	insertAccount,
+	insertBilling,
 	insertSubscription,
+	insertUser,
 } from "./support/database";
 import { installFakeNetwork } from "./support/network";
 import { fakeStripe, stripeEvent, stripeSignature } from "./support/stripe";
@@ -19,6 +21,10 @@ const SUBSCRIBED_TYPES = [
 	"invoice.paid",
 	"invoice.payment_failed",
 ];
+
+// The users of these tests never sign in: the webhook reads their rows.
+const OCTOCAT = "user_octocat";
+const MOJOMBO = "user_mojombo";
 
 let stripe: ReturnType<typeof fakeStripe>;
 
@@ -62,9 +68,9 @@ describe("POST /webhooks/stripe with a signature that does not hold", () => {
 
 	beforeEach(async () => {
 		// A sync of this customer would change these rows.
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
+		await insertUser({ id: OCTOCAT });
+		await insertBilling({
+			user_id: OCTOCAT,
 			stripe_customer_id: "cus_octocat",
 		});
 		stripe.setCustomer("cus_octocat", "billing@example.com");
@@ -119,23 +125,23 @@ describe("POST /webhooks/stripe with a signature that does not hold", () => {
 	});
 });
 
-describe("a signed event of a subscribed type, for a customer stored on an account", () => {
+describe("a signed event of a subscribed type, for a customer stored on a user's billing row", () => {
 	beforeEach(async () => {
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
-			github_email: "octocat@github.com",
+		await insertUser({ id: OCTOCAT, email: "octocat@github.com" });
+		await insertBilling({
+			user_id: OCTOCAT,
 			stripe_customer_id: "cus_octocat",
 			billing_email: "old-billing@example.com",
+			checkout_session_id: "cs_test_octocat",
 		});
-		await insertAccount({
-			github_user_id: 1,
-			github_login: "mojombo",
+		await insertUser({ id: MOJOMBO });
+		await insertBilling({
+			user_id: MOJOMBO,
 			stripe_customer_id: "cus_mojombo",
 			billing_email: "mojombo@example.com",
 		});
 		await insertSubscription({
-			github_user_id: 1,
+			user_id: MOJOMBO,
 			stripe_subscription_id: "sub_mojombo",
 			status: "active",
 		});
@@ -158,7 +164,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 			expect(response.status).toBe(200);
 			expect(await allSubscriptions()).toContainEqual({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				stripe_subscription_id: "sub_octocat",
 				status: "active",
 				plan: "pro_year",
@@ -169,7 +175,8 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		},
 	);
 
-	it("mirrors the customer's e-mail as the billing e-mail and keeps the identity data", async () => {
+	it("mirrors the customer's e-mail as the billing e-mail, and keeps the user and the stored Checkout", async () => {
+		const users = await allUsers();
 		stripe.setSubscription({
 			id: "sub_octocat",
 			customer: "cus_octocat",
@@ -178,19 +185,21 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		await deliver("invoice.paid", "cus_octocat");
 
-		expect(await allAccounts()).toContainEqual(
-			expect.objectContaining({
-				github_user_id: 583231,
-				github_login: "octocat",
-				github_email: "octocat@github.com",
-				stripe_customer_id: "cus_octocat",
-				billing_email: "billing@example.com",
-			}),
-		);
+		expect(await allBilling()).toContainEqual({
+			user_id: OCTOCAT,
+			stripe_customer_id: "cus_octocat",
+			billing_email: "billing@example.com",
+			checkout_session_id: "cs_test_octocat",
+			created_at: "2026-01-01T00:00:00.000Z",
+			updated_at: expect.not.stringMatching("2026-01-01T00:00:00.000Z"),
+		});
+		// The user's own e-mail is Better Auth's, and the webhook leaves it.
+		expect(await allUsers()).toEqual(users);
 	});
 
-	it("leaves every other account and subscription as they were", async () => {
-		const [mojombo] = await allAccounts();
+	it("leaves every other user's billing and subscription as they were", async () => {
+		const [mojombo] = await allBilling();
+		expect(mojombo?.user_id).toBe(MOJOMBO);
 		const [mojomboSubscription] = await allSubscriptions();
 		stripe.setSubscription({
 			id: "sub_octocat",
@@ -201,7 +210,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		const response = await deliver("invoice.paid", "cus_octocat");
 
 		expect(response.status).toBe(200);
-		expect(await allAccounts()).toContainEqual(mojombo);
+		expect(await allBilling()).toContainEqual(mojombo);
 		expect(await allSubscriptions()).toContainEqual(mojomboSubscription);
 	});
 
@@ -220,13 +229,13 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, status: "trialing" }),
+			expect.objectContaining({ user_id: OCTOCAT, status: "trialing" }),
 		);
 	});
 
 	it("stores what Stripe has now, not the snapshot the event carries", async () => {
 		await insertSubscription({
-			github_user_id: 583231,
+			user_id: OCTOCAT,
 			stripe_subscription_id: "sub_octocat",
 			status: "active",
 		});
@@ -247,7 +256,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
 			expect.objectContaining({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				stripe_subscription_id: "sub_octocat",
 				status: "canceled",
 			}),
@@ -273,14 +282,15 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		expect(first.status).toBe(200);
 		expect(second.status).toBe(200);
 		expect(afterFirst.subscriptions).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, status: "past_due" }),
+			expect.objectContaining({ user_id: OCTOCAT, status: "past_due" }),
 		);
-		const ignoringUpdatedAt = ({
-			accounts,
-			subscriptions,
-		}: typeof afterFirst) => ({
-			accounts: accounts.map((row) => ({ ...row, updated_at: "" })),
-			subscriptions: subscriptions.map((row) => ({ ...row, updated_at: "" })),
+		const ignoringUpdatedAt = (contents: typeof afterFirst) => ({
+			...contents,
+			billing: contents.billing.map((row) => ({ ...row, updated_at: "" })),
+			subscriptions: contents.subscriptions.map((row) => ({
+				...row,
+				updated_at: "",
+			})),
 		});
 		expect(ignoringUpdatedAt(await databaseContents())).toEqual(
 			ignoringUpdatedAt(afterFirst),
@@ -313,7 +323,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		expect(await allSubscriptions()).toContainEqual(
 			expect.objectContaining({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				stripe_subscription_id: "sub_live",
 				status: "unpaid",
 				plan: "pro_year",
@@ -323,7 +333,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 	it("stores the most recently created subscription when none is live", async () => {
 		await insertSubscription({
-			github_user_id: 583231,
+			user_id: OCTOCAT,
 			stripe_subscription_id: "sub_second",
 			status: "active",
 		});
@@ -345,7 +355,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		expect(await allSubscriptions()).toContainEqual(
 			expect.objectContaining({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				stripe_subscription_id: "sub_second",
 				status: "canceled",
 				plan: "pro_year",
@@ -353,9 +363,9 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		);
 	});
 
-	it("removes the account's subscription when the customer has none in Stripe", async () => {
+	it("removes the user's subscription when the customer has none in Stripe", async () => {
 		await insertSubscription({
-			github_user_id: 583231,
+			user_id: OCTOCAT,
 			stripe_subscription_id: "sub_gone",
 			status: "active",
 		});
@@ -367,7 +377,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toEqual([
-			expect.objectContaining({ github_user_id: 1 }),
+			expect.objectContaining({ user_id: MOJOMBO }),
 		]);
 	});
 
@@ -383,7 +393,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, plan: null }),
+			expect.objectContaining({ user_id: OCTOCAT, plan: null }),
 		);
 	});
 
@@ -406,7 +416,7 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		expect(response.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
 			expect.objectContaining({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				status: "active",
 				cancel_at_period_end: 1,
 			}),
@@ -441,13 +451,13 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		expect(first.status).toBe(200);
 		expect(second?.status).toBe(200);
 		expect(await allSubscriptions()).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, status: "active" }),
+			expect.objectContaining({ user_id: OCTOCAT, status: "active" }),
 		);
 	});
 
 	it("forgets a customer deleted in Stripe, so the next Checkout creates a new one", async () => {
 		await insertSubscription({
-			github_user_id: 583231,
+			user_id: OCTOCAT,
 			stripe_subscription_id: "sub_octocat",
 			status: "active",
 		});
@@ -465,60 +475,62 @@ describe("a signed event of a subscribed type, for a customer stored on an accou
 		);
 
 		expect(response.status).toBe(200);
-		expect(await allAccounts()).toContainEqual(
+		expect(await allBilling()).toContainEqual(
 			expect.objectContaining({
-				github_user_id: 583231,
-				github_email: "octocat@github.com",
+				user_id: OCTOCAT,
 				stripe_customer_id: null,
 				billing_email: null,
+				checkout_session_id: "cs_test_octocat",
 			}),
 		);
 		expect(await allSubscriptions()).toContainEqual(
-			expect.objectContaining({ github_user_id: 583231, status: "canceled" }),
+			expect.objectContaining({ user_id: OCTOCAT, status: "canceled" }),
 		);
 	});
 });
 
 describe("a signed event of a subscribed type, for the customer of a first payment", () => {
 	beforeEach(async () => {
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
-			github_email: "octocat@github.com",
+		await insertUser({ id: OCTOCAT, email: "octocat@github.com" });
+		// As POST /checkout leaves it: the Checkout, and no customer yet.
+		await insertBilling({
+			user_id: OCTOCAT,
+			checkout_session_id: "cs_test_octocat",
 		});
-		await insertAccount({ github_user_id: 1, github_login: "mojombo" });
+		await insertUser({ id: MOJOMBO });
 		stripe.setCustomer("cus_new", "paid-with@example.com");
 		stripe.setSubscription({
 			id: "sub_new",
 			customer: "cus_new",
 			status: "active",
 			plan: "pro_monthly",
-			metadata: { github_user_id: "583231" },
+			metadata: { user_id: OCTOCAT },
 		});
 	});
 
 	it.each(SUBSCRIBED_TYPES)(
-		"on %s, finds the account by the GitHub user id stamped on the subscription",
+		"on %s, finds the user by the id stamped on the subscription",
 		async (type) => {
+			const users = await allUsers();
+
 			const response = await deliver(type, "cus_new");
 
 			expect(response.status).toBe(200);
-			expect(await allAccounts()).toEqual([
-				expect.objectContaining({
-					github_user_id: 1,
-					stripe_customer_id: null,
-					billing_email: null,
-				}),
-				expect.objectContaining({
-					github_user_id: 583231,
-					github_email: "octocat@github.com",
+			// The other user gets no billing row.
+			expect(await allBilling()).toEqual([
+				{
+					user_id: OCTOCAT,
 					stripe_customer_id: "cus_new",
 					billing_email: "paid-with@example.com",
-				}),
+					checkout_session_id: "cs_test_octocat",
+					created_at: "2026-01-01T00:00:00.000Z",
+					updated_at: expect.not.stringMatching("2026-01-01T00:00:00.000Z"),
+				},
 			]);
+			expect(await allUsers()).toEqual(users);
 			expect(await allSubscriptions()).toEqual([
 				{
-					github_user_id: 583231,
+					user_id: OCTOCAT,
 					stripe_subscription_id: "sub_new",
 					status: "active",
 					plan: "pro_monthly",
@@ -530,13 +542,42 @@ describe("a signed event of a subscribed type, for the customer of a first payme
 		},
 	);
 
+	it("creates the billing row of a stamped user who has none", async () => {
+		stripe.setCustomer("cus_other", "other@example.com");
+		stripe.setSubscription({
+			id: "sub_other",
+			customer: "cus_other",
+			status: "active",
+			metadata: { user_id: MOJOMBO },
+		});
+
+		const response = await deliver("invoice.paid", "cus_other");
+
+		expect(response.status).toBe(200);
+		expect(await allBilling()).toContainEqual({
+			user_id: MOJOMBO,
+			stripe_customer_id: "cus_other",
+			billing_email: "other@example.com",
+			checkout_session_id: null,
+			created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
+			updated_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/),
+		});
+		expect(await allSubscriptions()).toContainEqual(
+			expect.objectContaining({
+				user_id: MOJOMBO,
+				stripe_subscription_id: "sub_other",
+				status: "active",
+			}),
+		);
+	});
+
 	it("ends in Stripe's current state whatever the order of the events", async () => {
 		// The cancellation's event arrives before the purchase's.
 		stripe.setSubscription({
 			id: "sub_new",
 			customer: "cus_new",
 			status: "canceled",
-			metadata: { github_user_id: "583231" },
+			metadata: { user_id: OCTOCAT },
 		});
 
 		await deliver("customer.subscription.deleted", "cus_new", {
@@ -549,7 +590,7 @@ describe("a signed event of a subscribed type, for the customer of a first payme
 
 		expect(await allSubscriptions()).toEqual([
 			expect.objectContaining({
-				github_user_id: 583231,
+				user_id: OCTOCAT,
 				stripe_subscription_id: "sub_new",
 				status: "canceled",
 			}),
@@ -559,12 +600,12 @@ describe("a signed event of a subscribed type, for the customer of a first payme
 
 describe("a signed event that is not for the API", () => {
 	beforeEach(async () => {
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
+		await insertUser({ id: OCTOCAT });
+		await insertBilling({
+			user_id: OCTOCAT,
 			stripe_customer_id: "cus_octocat",
 		});
-		await insertSubscription({ github_user_id: 583231, status: "active" });
+		await insertSubscription({ user_id: OCTOCAT, status: "active" });
 		stripe.setCustomer("cus_octocat", "billing@example.com");
 		stripe.setSubscription({
 			id: "sub_octocat",
@@ -602,10 +643,14 @@ describe("a signed event that is not for the API", () => {
 
 	it.each([
 		["has no stamped subscription", {}],
-		["is stamped with a user that has no account", { github_user_id: "42" }],
+		["is stamped with a user that does not exist", { user_id: "user_nobody" }],
 		[
 			"is stamped with something that is no user id",
-			{ github_user_id: "583231 OR 1=1" },
+			{ user_id: "user_octocat' OR '1'='1" },
+		],
+		[
+			"carries only the stamp of the accounts that were dropped",
+			{ github_user_id: "583231" },
 		],
 	])(
 		"answers 200, changes nothing and logs the customer id when the customer %s",
@@ -633,13 +678,13 @@ describe("a signed event that is not for the API", () => {
 describe("a signed event of a subscribed type when Stripe fails", () => {
 	it("answers 500 and changes nothing, so that Stripe delivers it again", async () => {
 		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
+		await insertUser({ id: OCTOCAT });
+		await insertBilling({
+			user_id: OCTOCAT,
 			stripe_customer_id: "cus_octocat",
 			billing_email: "old-billing@example.com",
 		});
-		await insertSubscription({ github_user_id: 583231, status: "active" });
+		await insertSubscription({ user_id: OCTOCAT, status: "active" });
 		const before = await databaseContents();
 		stripe.goDown();
 
@@ -656,13 +701,13 @@ describe("a signed event of a subscribed type when Stripe fails", () => {
 
 	it("changes nothing when only the list of subscriptions fails", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
-		await insertAccount({
-			github_user_id: 583231,
-			github_login: "octocat",
+		await insertUser({ id: OCTOCAT });
+		await insertBilling({
+			user_id: OCTOCAT,
 			stripe_customer_id: "cus_octocat",
 			billing_email: "old-billing@example.com",
 		});
-		await insertSubscription({ github_user_id: 583231, status: "active" });
+		await insertSubscription({ user_id: OCTOCAT, status: "active" });
 		stripe.setCustomer("cus_octocat", "billing@example.com");
 		const before = await databaseContents();
 		const answer = stripe.handle;

@@ -1,5 +1,5 @@
 # Make the Octo account its own identity, with Better Auth
-status: todo
+status: done
 created: 2026-11-19
 type: feat
 depends-on: none
@@ -112,51 +112,51 @@ for that token, and no route asks GitHub who the caller is.
 - The test and run commands live in `.octo/project.md`.
 
 ## Acceptance criteria
-- [ ] C1. The repository shall hold a new D1 migration, the two earlier ones untouched, that
+- [x] C1. The repository shall hold a new D1 migration, the two earlier ones untouched, that
   drops the old `accounts` and `subscriptions`, creates Better Auth's `user`, `session`,
   `account` and `verification`, and creates `billing` (key `user_id` referencing `user`, with
   `stripe_customer_id` unique, `billing_email`, `checkout_session_id`, `created_at`,
   `updated_at`) and `subscriptions` (key `user_id` referencing `billing`, the other columns as
   today); on a fresh clone `pnpm test` and `pnpm dev` shall run against it with no manual step,
   and Better Auth shall report no table and no column missing.
-- [ ] C2. When a browser opens `GET /sign-in/github` or `GET /sign-in/apple` with a
+- [x] C2. When a browser opens `GET /sign-in/github` or `GET /sign-in/apple` with a
   `challenge`, the base64url SHA-256 of a random verifier the app keeps, the system shall
   redirect it to that provider's authorization page, naming the API's
   `/api/auth/callback/<provider>` as the return address; a missing or malformed `challenge`
   shall answer 400 `{"error":"Invalid challenge"}`, and any other name after `/sign-in/` shall
   answer 404 `{"error":"Not Found"}`.
-- [ ] C3. When the provider returns that browser to the callback with an authorization, the
+- [x] C3. When the provider returns that browser to the callback with an authorization, the
   system shall create the user at their first sign-in, or find the one that provider account
   belongs to, open a session and redirect the browser to `APP_SIGN_IN_URL` with a single-use
   `code` and nothing else of the session; when the authorization is refused or fails, it shall
   open no session and redirect to `APP_SIGN_IN_URL` with an `error` and no `code`.
-- [ ] C4. When a client sends `POST /sign-in/token` with `{"code": ..., "verifier": ...}`, the
+- [x] C4. When a client sends `POST /sign-in/token` with `{"code": ..., "verifier": ...}`, the
   code for the first time and within 3 minutes and the verifier the one whose SHA-256 is the
   `challenge` of the sign-in that produced the code, the system shall answer 200
   `{"token": ...}` with the session's signed token; a code already used, older than that or
   never issued, or a verifier that does not match, shall answer 401 `{"error":"Invalid code"}`
   and no token; `POST /api/auth/one-time-token/verify` shall answer 404, so that no code is
   traded without its verifier; and D1 shall at no moment hold the code in a readable form.
-- [ ] C5. When a provider reports a verified e-mail that an existing user has, the system
+- [x] C5. When a provider reports a verified e-mail that an existing user has, the system
   shall sign that user in and add the provider's account to it, creating no second user; when
   GitHub reports the matching e-mail as unverified, it shall link nothing and end as the
   failure of C3.
-- [ ] C6. `/account` and `/checkout` shall answer for `Authorization: Bearer <token>` with the
+- [x] C6. `/account` and `/checkout` shall answer for `Authorization: Bearer <token>` with the
   signed token of C4, and answer 401 `{"error":"Unauthorized"}` to anything else, without a
   call to GitHub: no header, an unknown or expired token, a GitHub token, the bare value of
   `session.token` as D1 holds it, and the token of a session that `POST /api/auth/sign-out`
   ended.
-- [ ] C7. `GET /account` shall answer 200 to every signed-in user with `user_id`, `email`,
+- [x] C7. `GET /account` shall answer 200 to every signed-in user with `user_id`, `email`,
   `name`, `access` and `subscription`, the last two as today and `"access":false` with
   `"subscription":null` for a user who never opened a Checkout; `PUT /account` shall no longer
   exist and answer 404 `{"error":"Not Found"}`.
-- [ ] C8. `POST /checkout` and the webhook's sync shall behave as `specs/api-stripe-wiring.md`
+- [x] C8. `POST /checkout` and the webhook's sync shall behave as `specs/api-stripe-wiring.md`
   and `specs/duplicated-payment.md` describe, with the user where the GitHub user was: the
   user's id goes in `client_reference_id` and in the subscription's metadata as `user_id`, the
   sync finds the account by its stored customer or else by that stamp, the prefilled e-mail is
   the user's, and a user with no `billing` row checks out as an account with no customer and
   no previous Checkout, never a 404.
-- [ ] C9. `wrangler.jsonc` shall require, and `vitest.config.ts` give test values to,
+- [x] C9. `wrangler.jsonc` shall require, and `vitest.config.ts` give test values to,
   `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `APP_SIGN_IN_URL`, `APPLE_CLIENT_ID`,
   `APPLE_TEAM_ID`, `APPLE_KEY_ID` and `APPLE_PRIVATE_KEY`, beside the six of today; the README
   shall describe the account as Octo's own, the sign-in from the browser to the token
@@ -167,7 +167,7 @@ for that token, and no route asks GitHub who the caller is.
   Apple's App ID, Services ID, return URL and key, and, as recommended and not required, a
   Cloudflare rate limiting rule by client address on `/sign-in/` and `/api/auth/`, which needs
   the Worker on a domain of the account.
-- [ ] C10. After any sign-in, first or repeated, with GitHub or with Apple, the `account` row
+- [x] C10. After any sign-in, first or repeated, with GitHub or with Apple, the `account` row
   shall hold no token of the provider: `accessToken`, `refreshToken` and `idToken` are null.
 
 ## Out of scope
@@ -311,3 +311,32 @@ for that token, and no route asks GitHub who the caller is.
   answers `"access":true`. Sign in again with a different GitHub account whose e-mail is
   another: it gets an account of its own, with `"access":false`. After
   `POST /api/auth/sign-out`, the first token answers 401.
+
+## Implementation
+- - C1: proven by test/schema.test.ts ("has every table, column and index Better Auth asks for", which calls `getMigrations` on the app's own Better Auth, plus the column, uniqueness and foreign-key tests), seen red first (8 of 8 failing before `migrations/0003_make_the_account_its_own_identity.sql`); `pnpm migrate:local`, the step `pnpm dev` runs first, applied 0001 to 0003 cleanly; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C2: proven by test/sign-in.test.ts ("GET /sign-in/github", "GET /sign-in/apple", the 14 "answers 400 and starts nothing when the challenge ..." cases and "GET /sign-in/<any other name>"), seen red first; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C3: proven by test/sign-in.test.ts ("the provider's return to the callback, with an authorization" and "..., refused or failed"), with Better Auth running for real against fakes of GitHub and Apple and a test browser that carries the cookies, seen red first; forwarding Better Auth's cookies to the browser turns 3 of them red; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C4: proven by test/sign-in.test.ts ("POST /sign-in/token" and "the single-use code"), seen red first; each protection was also removed in turn and its test seen red: `storeToken: "hashed"`, the closed `/one-time-token/verify` and `/one-time-token/generate`, and the 3 minutes; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C5: proven by test/provider-accounts.test.ts ("a sign-in whose provider reports a verified e-mail an existing user has" and "... GitHub reports as unverified"). They passed at once, since this is Better Auth's default, so they were seen red by breaking it: linking turned off (4 red), GitHub made a trusted provider (1 red), `requireLocalEmailVerified: false` (1 red); 2026-11-20 verify passed (240 passed, 0 failed).
+  - C6: proven by test/auth.test.ts, each case on `GET /account` and on `POST /checkout`, seen red first; without `requireSignature` the bare `session.token` tests go red, and with the whole request handed to Better Auth the cookie test goes red; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C7: proven by test/account.test.ts ("GET /account" and "PUT /account ... no longer exists"), seen red first; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C8: proven by test/checkout.test.ts and test/webhooks.test.ts, the suites of the two earlier specs re-keyed on the user and its `billing` row, plus "checks out as an account with no customer and no previous Checkout, never a 404", "creates the user's billing row with the session's id ..." and "creates the billing row of a stamped user who has none"; seen red first (112 failing before the re-keying of `src/`); 2026-11-20 verify passed (240 passed, 0 failed).
+  - C9: proven by test/secrets.test.ts (the 13 names `wrangler.jsonc` requires and their test values), test/bindings.types.ts (compiled by `pnpm typecheck`) and test/readme.test.ts (9 new tests over the README's sections), seen red first; 2026-11-20 verify passed (240 passed, 0 failed).
+  - C10: proven by test/provider-accounts.test.ts ("the provider's tokens"), seen red first (4 failing); with only the hook on the creation the repeated sign-ins go red, so the hook is on every write of `account`. Better Auth could be made to write them empty, so `account.encryptOAuthTokens` was not needed; 2026-11-20 verify passed (240 passed, 0 failed).
+  - Gates: `pnpm check` and `pnpm typecheck` pass; `wrangler deploy --dry-run --minify` builds the Worker with Better Auth at 1067 KiB (263 KiB gzip).
+  - Verification's end-to-end check: not run by Implement. It needs the real secrets in `.dev.vars` (which this phase cannot read), a person authorizing at GitHub in a browser and the run command, which is the user's; its steps are the manual checks.
+  - Decision: the code is tied to the challenge by what is stored. The one-time-token plugin stores the hash of `<code>.<challenge>` (its `generateToken`), the browser gets only `<code>`, and `POST /sign-in/token` asks Better Auth for `<code>.<SHA-256 of the verifier>`. Why: one atomic lookup, no second row to keep in step, and D1 holds neither the code nor anything that finds it without the verifier. Cost if wrong: a row of its own for the challenge, in `src/routes/sign-in.ts`.
+  - Decision: a wrong verifier does not spend the code; the right one still trades it within the 3 minutes. Why: it follows from the above, and spending it would let whoever intercepts a code cancel the real app's sign-in. Cost if wrong: a delete of the row on a refused trade.
+  - Decision: the callback is the API's own route around Better Auth's (`src/routes/auth.ts`). Better Auth's answer, with the session cookie, never leaves the Worker: the browser gets only the redirect to `APP_SIGN_IN_URL` and the end of the state cookie. The challenge rides Better Auth's own state as the query of its `callbackURL`, `/sign-in/done`, a path no route answers. Why: "nothing else of the session", and a session cookie left in a browser could be turned into a code by a later visit. Cost if wrong: a route at `/sign-in/done` that reads the cookie instead.
+  - Decision: `POST /api/auth/sign-in/social` and `GET /api/auth/one-time-token/generate` answer 404 too, beside `/one-time-token/verify`. Why: the first starts a sign-in with no challenge and can sign in with a provider's ID token, skipping the code; the second is how a client would ask Better Auth for a code. Cost if wrong: one entry of `disabledPaths` in `src/auth.ts`.
+  - Decision: Better Auth's other default endpoints stay reachable under `/api/auth/*` for a signed-in client (`get-session`, `list-sessions`, `revoke-session`, `update-user`, `link-social`, `unlink-account` and the like), as the spec mounts the whole handler. Why: closing them is a choice of product the spec does not make; none gives a session without the code. Cost if wrong: more entries in `disabledPaths`.
+  - Decision: `/account` and `/checkout` hand Better Auth the `Authorization` header and nothing else, so the signed token in a cookie answers 401. Why: C6 names the header, and a cookie that signs in would bring cross-site requests into play. Cost if wrong: pass the request's headers in `src/session.ts`.
+  - Decision: Better Auth's default `requireLocalEmailVerified` stays. A user created by a GitHub sign-in whose e-mail GitHub had not verified is joined by no other provider: a later sign-in with that address, even verified, ends as the failure of C3 and creates no second user. Why: joining would hand the real owner of the address an account somebody else made with it. Cost if wrong: one option in `src/auth.ts`; meanwhile that address cannot sign in with the other provider.
+  - Decision: `billing.user_id` references `user` with no cascade, so a user with a billing row cannot be deleted. Why: deleting a user is out of scope, and a cascade would silently drop a paying customer's link to Stripe. Cost if wrong: a new migration.
+  - Decision: Apple's client secret is signed on each request that talks to Apple, valid for 5 minutes, and cached nowhere; a request that does not need Apple signs nothing, so `/sign-in/github`, `/account` and `/checkout` work without the four Apple values. Why: "nothing expires", and a wrong Apple key must not break the rest. Cost if wrong: a cache per isolate in `src/apple.ts`.
+  - Decision: the `error` the app gets is Better Auth's or the provider's code when it is a plain word, and `sign_in_failed` otherwise. Why: the provider's `error` is text from a URL, and the app should not receive arbitrary text through the API. Cost if wrong: one line in `src/routes/auth.ts`.
+  - Decision: `POST /sign-in/token` answers 401 `{"error":"Invalid code"}` to a body that is not JSON or lacks a string `code` or `verifier`. Why: C4 defines only 200 and 401. Cost if wrong: a 400 for those bodies.
+  - Decision: `PUT /account` answers 404 to everybody, signed in or not: the session check moved from the resource to each route. Why: a route that no longer exists should not answer 401. Cost if wrong: none worth naming.
+  - Decision: the sync no longer reads the old `github_user_id` stamp of a Stripe subscription. Why: the accounts it pointed to are dropped. Cost if wrong: a sandbox subscription made before this change matches no user and is logged.
+  - Decision: the test value of `APPLE_PRIVATE_KEY` is a key `vitest.config.ts` makes for each run, and the fake of Apple verifies the client secret with its public half. Why: no private key, even a throwaway one, sits in the repository. Cost if wrong: none.
+  - Tweak: the user always has an e-mail, so the case "no GitHub e-mail, Checkout URL as Stripe returned it" left the tests; `test/support/github.ts` became a fake of GitHub as a sign-in provider and `test/support/apple.ts`, `browser.ts` and `sign-in.ts` are new; `.octo/project.md` names the thirteen values.

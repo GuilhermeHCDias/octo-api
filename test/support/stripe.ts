@@ -208,7 +208,7 @@ export function fakeStripe() {
 	}
 
 	return {
-		host: "api.stripe.com",
+		hosts: ["api.stripe.com"],
 		requests,
 		/** The parameters of every Checkout Session the Worker created. */
 		sessions,

@@ -48,7 +48,7 @@ webhooks.post("/stripe", async (c) => {
 	// A failure of Stripe here throws: the 500 makes Stripe deliver it again.
 	const matched = await syncCustomer(c.env.DB, stripe, customerId);
 	if (!matched) {
-		console.warn(`Stripe customer ${customerId} matches no account`);
+		console.warn(`Stripe customer ${customerId} matches no user`);
 	}
 	return c.json({ received: true });
 });

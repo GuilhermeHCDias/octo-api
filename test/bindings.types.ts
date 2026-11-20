@@ -16,3 +16,12 @@ expectTypeOf<
 expectTypeOf<
 	CloudflareBindings["CHECKOUT_CANCEL_URL"]
 >().toEqualTypeOf<string>();
+expectTypeOf<
+	CloudflareBindings["BETTER_AUTH_SECRET"]
+>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["BETTER_AUTH_URL"]>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["APP_SIGN_IN_URL"]>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["APPLE_CLIENT_ID"]>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["APPLE_TEAM_ID"]>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["APPLE_KEY_ID"]>().toEqualTypeOf<string>();
+expectTypeOf<CloudflareBindings["APPLE_PRIVATE_KEY"]>().toEqualTypeOf<string>();
